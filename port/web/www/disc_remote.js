@@ -10,7 +10,7 @@
 
 const MEMORY = 96;    // blocks kept in memory here
 
-export async function createRemoteDisc(base, say, onProgress = () => {}) {
+export async function createRemoteDisc(base, say, onProgress = () => {}, waitingOn = () => {}) {
   const got = await fetch(`${base}/info`, { cache: 'no-store' });
   if (!got.ok) throw Error(`the site's disc: ${got.status} ${(await got.text()).slice(0, 200)}`);
   const { size, tag, block: BLOCK, check } = await got.json();
@@ -34,6 +34,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
     };
   });
   store.postMessage({ type: 'open', base, tag, size, block: BLOCK, shared });
+  waitingOn(ctrl);  // the page watches ctrl[3]: the game is waiting on the network
   await ready;
 
   function fetchBlock(i) {
@@ -41,7 +42,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
     while (Atomics.load(ctrl, 0) === 1) Atomics.wait(ctrl, 0, 1);
     const state = Atomics.load(ctrl, 0), b = state === 2 ? data.slice(0, ctrl[2]) : null;
     Atomics.store(ctrl, 0, 0);
-    if (!b) throw Error(`disc block ${i} could not be read (the log has why)`);
+    if (!b) throw Error(`disc block ${i}: this site's disc link no longer works (a new upload or a new key): reload the page`);
     return b;
   }
   const memory = new Map();

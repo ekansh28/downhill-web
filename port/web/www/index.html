@@ -38,6 +38,9 @@
     font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
   #hosted[hidden], #hostedNote[hidden] { display: none; }
   .disc-state { font-size: .8rem; color: var(--gold); }
+  .disc-wait { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 6; padding: 8px 14px; border-radius: 8px;
+    background: var(--panel); color: var(--gold); font: 600 .85rem var(--font); pointer-events: none; }
+  .disc-wait[hidden] { display: none; }
 
   /* On-screen controls (touch.js): over the picture, only while playing. Sizes follow the
      screen's short side, so a phone and a tablet both get thumb-sized buttons. */
@@ -111,6 +114,7 @@
   </div>
 </div>
 
+<div class="disc-wait" id="discWait" hidden>Loading game data from the network&hellip;</div>
 <div class="hint" id="hint">Press <kbd>`</kbd> for the menu &middot; double-click for fullscreen</div>
 
 <div class="menu" id="menu" hidden>

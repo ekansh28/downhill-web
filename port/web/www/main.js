@@ -10,6 +10,20 @@ const params = new URLSearchParams(location.search);
 const addLog = text => { log.append(text + '\n'); while (log.childNodes.length > 400) log.firstChild.remove();
   if (!log.hidden) log.scrollTop = log.scrollHeight; };
 
+// What the game needs from the browser, said on the start card before anything starts: JSPI (the
+// game's threads, WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's
+// engine, which has JSPI from Safari 27 (iOS and iPadOS 27).
+const unsupported = typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
+if (unsupported) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  document.querySelector('.note').textContent = ios
+    ? 'This iPhone or iPad browser lacks JSPI, which the game needs. It came with iOS and iPadOS 27 (Safari 27): update iOS, and keep Lockdown Mode off (it turns WebAssembly features off).'
+    : unsupported === 'jspi'
+      ? 'This browser lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome).'
+      : 'This browser has no WebGPU. Use Chrome or Edge 137 or later, with graphics acceleration on.';
+  document.querySelector('.note').style.color = 'var(--gold)';
+  for (const id of ['start', 'hosted', 'iso']) $(id).disabled = true;
+}
 if (!crossOriginIsolated)  // on the start card too: the status line is in the menu
   status.textContent = document.querySelector('.note').textContent = 'This page needs cross-origin isolation: start it with port/web/serve.mjs.';
 const input = new SharedArrayBuffer(256 + 32 * 4 + 16 * 4 + 4 * (2 + 64));
@@ -203,6 +217,7 @@ async function start(source) {
     else if (m.type === 'room') invite(m.code, m.inRoom);
     else if (m.type === 'mic') microphone(m.on, m.device).then(state => worker.postMessage({ type: 'mic-state', state }));
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
+    else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
     else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
       if (m.disc) discProgress(m.disc);
@@ -239,6 +254,19 @@ function discProgress(d) {
 }
 $('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });
   $('discPause').textContent = discPaused ? 'Resume disc download' : 'Pause disc download'; };
+// The game waiting on the network for the streamed disc (disc_store.js sets ctrl[3] while it fetches a
+// block the game is held for): after a moment, a note over the picture, so a slow line never looks
+// like a frozen game.
+function watchDiscWait(ctrl) {
+  let since = 0;
+  const tick = () => {
+    const waiting = Atomics.load(ctrl, 3) === 1 && Atomics.load(ctrl, 0) === 1;
+    since = waiting ? since || performance.now() : 0;
+    $('discWait').hidden = !(since && performance.now() - since > 700);
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
 let micChanged = () => {};
 let micQueue = Promise.resolve(), micWanted = 0;
 function microphone(on, device = '') {

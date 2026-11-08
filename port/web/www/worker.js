@@ -31,7 +31,10 @@ const post = (type, data) => postMessage({ type, ...data });
 const say = text => post('log', { text });
 let micAnswer = () => {};  // the page's microphone answer (main.js), to voice chat once it is up
 let micNames = [];         // the page's recording devices (SETTINGS > Microphone)
-onmessage = e => { if (e.data.type === 'start') start(e.data).catch(err => { post('error', { text: String(err?.stack || err) }); });
+// The message first: Safari's and Firefox's stack leaves it out.
+onmessage = e => { if (e.data.type === 'start') start(e.data).catch(err => { const stack = String(err?.stack || '');
+    post('error', { text: stack.includes(String(err?.message)) ? stack : `${err}
+${stack}` }); });
   else if (e.data.type === 'mic-state') micAnswer(e.data.state);
   else if (e.data.type === 'mic-devices') micNames = e.data.names || [];
   else if (e.data.type === 'disc-pause') discPause(e.data.paused); };
@@ -103,7 +106,7 @@ async function start(m) {
   const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([coreModulePromise, WebAssembly.compile(graphicsBytes),
     threaded ? WebAssembly.compileStreaming(fetch('build/gqueue.wasm')) : null, threaded ? WebAssembly.compileStreaming(fetch('build/vu.wasm')) : null]);
   // m.discUrl: this site's own disc (port/web/host, ?disc=KEY; disc_remote.js), else the player's file
-  const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say) : discSource(m);
+  const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say, undefined, ctrl => post('disc-wait', { ctrl })) : discSource(m);
   if (!m.discUrl) say(`disc: ${(disc.size / 2 ** 30).toFixed(2)} GiB`);
   else discPause = p => disc.pause(p);
   const keys = new Uint8Array(m.input, 0, 256), pads = new Int32Array(m.input, 256, 32);  // main.js: players 1-4
