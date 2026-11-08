@@ -102,6 +102,7 @@ export async function createSettings(env, log) {
   if (on) log(`settings: ${name} in this browser${text ? '' : ' (none stored yet: the defaults)'}`);
   let writing = Promise.resolve();
   return {
+    fresh: on && !text,  // nothing stored yet: the game's first run in this browser
     // host_setting_save: nonzero when kept (the write finishes while the game goes on).
     save(key, value) {
       if (!on) return 0;

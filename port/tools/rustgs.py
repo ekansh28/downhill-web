@@ -116,6 +116,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 import check_rust_lib  # noqa: E402
+from drives import HOW, ALLOWED as SYSTEM_DRIVE_ALLOWED, on_system_drive  # noqa: E402
 
 ROOT = TOOLS.parents[1]
 RENDER = ROOT / 'port' / 'render'
@@ -189,13 +190,13 @@ def log(msg):
 
 def home(var):
     value = os.environ.get(var)
-    if not value and os.name != 'nt':  # rustup's own default: no system drive to keep free there
+    if not value and (os.name != 'nt' or SYSTEM_DRIVE_ALLOWED):  # rustup's own default
         value = os.path.join(os.path.expanduser('~'), '.cargo' if var == 'CARGO_HOME' else '.rustup')
     if not value:
         refuse('%s is not set (the Rust toolchain must live off the C: drive)' % var)
     path = os.path.normpath(value)
-    if os.path.splitdrive(path)[0].upper() == 'C:':
-        refuse('%s is on C: (%s); the system drive stays free' % (var, path))
+    if on_system_drive(path):
+        refuse('%s is on C: (%s); the system drive stays free%s' % (var, path, HOW))
     return path
 
 
@@ -218,8 +219,8 @@ def rustflags(triple, crate=RENDER_CRATE):
 
 def target_dir():
     path = CARGO_TARGETS / hashlib.sha1(os.path.normcase(str(ROOT)).encode()).hexdigest()[:8]
-    if path.resolve().drive.upper() == 'C:':
-        refuse('the cargo target dir %s is on C:' % path)
+    if on_system_drive(path.resolve()):
+        refuse('the cargo target dir %s is on C:%s' % (path, HOW))
     return path
 
 
@@ -698,8 +699,8 @@ def common(triple, profile):
         refuse('--profile %s: one of %s' % (profile, ', '.join(PROFILES)))
     # A C: worktree is safe when its build folder is junctioned to the work drive.
     # Cargo's own target/cache locations are checked separately.
-    if os.path.splitdrive(str(ROOT))[0].upper() == 'C:' and (ROOT / 'build').resolve().drive.upper() == 'C:':
-        refuse('the worktree %s needs its build folder off C: (a junction is fine)' % ROOT)
+    if on_system_drive(ROOT) and on_system_drive((ROOT / 'build').resolve()):
+        refuse('the worktree %s needs its build folder off C: (a junction is fine)%s' % (ROOT, HOW))
     return cargo_env(triple)
 
 

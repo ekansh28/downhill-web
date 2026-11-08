@@ -55,6 +55,20 @@ export const STAT = { shown: 0, size: 1, draws: 2, dispatches: 3, reads: 4, subm
 export const ENV_SCRATCH = Q + 0x1000;
 
 // True when the module defines a shared memory (the threaded build's core).
+// The same answer from the first bytes of a module as they arrive (worker.js streams the core): true
+// or false once its memory section has come, null while it hasn't (or never, for a module without).
+export function definesSharedMemoryHead(b) {
+  const leb = i => { let n = 0, s = 0, x; do { if (i >= b.length) return null; x = b[i++]; n += (x & 127) * 2 ** s; s += 7; } while (x & 128); return [n, i]; };
+  for (let i = 8; i < b.length;) {
+    const id = b[i], l = leb(i + 1); if (!l) return null;
+    const [size, at] = l;
+    if (id === 5) { const c = leb(at); if (!c || c[1] >= b.length) return null; return c[0] > 0 && (b[c[1]] & 2) !== 0; }
+    if (id > 5 && id !== 0) return false;  // past where a memory section would be
+    i = at + size;
+  }
+  return null;
+}
+
 export function definesSharedMemory(bytes) {
   const b = new Uint8Array(bytes);
   const leb = i => { let n = 0, s = 0, x; do { x = b[i++]; n += (x & 127) * 2 ** s; s += 7; } while (x & 128); return [n, i]; };

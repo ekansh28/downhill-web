@@ -89,3 +89,6 @@ discord_krisp*
 libdiscord_krisp*
 DiscordSocialSdk*
 discord_social_sdk/
+
+# The self-hosted browser site's own settings (port/web/host/deploy.mjs): buckets, image, private key
+port/web/host/site.local.json

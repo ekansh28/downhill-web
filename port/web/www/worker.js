@@ -22,9 +22,10 @@
 // shows it and leaves its numbers for the status line here.
 import { createNet } from './net.js';
 import { createVfs } from './vfs.js';
+import { createRemoteDisc } from './disc_remote.js';
 import { thunks } from './thunks.js';
 import { createSettings, BROWSER_PC_SETTINGS, RENDERER_LIVE } from './settings.js';
-import { startRenderer, renderImports, definesSharedMemory, shareSafeDecoding, Q, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
+import { startRenderer, renderImports, definesSharedMemoryHead, shareSafeDecoding, Q, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
 
 const post = (type, data) => postMessage({ type, ...data });
 const say = text => post('log', { text });
@@ -32,7 +33,9 @@ let micAnswer = () => {};  // the page's microphone answer (main.js), to voice c
 let micNames = [];         // the page's recording devices (SETTINGS > Microphone)
 onmessage = e => { if (e.data.type === 'start') start(e.data).catch(err => { post('error', { text: String(err?.stack || err) }); });
   else if (e.data.type === 'mic-state') micAnswer(e.data.state);
-  else if (e.data.type === 'mic-devices') micNames = e.data.names || []; };
+  else if (e.data.type === 'mic-devices') micNames = e.data.names || [];
+  else if (e.data.type === 'disc-pause') discPause(e.data.paused); };
+let discPause = () => {};  // the page's Pause disc download (a streamed disc only)
 
 // ---- the disc: 1 MiB blocks, a few kept ----
 function discSource(m) {
@@ -76,16 +79,33 @@ async function start(m) {
   if (typeof WebAssembly.Suspending !== 'function') throw Error('this browser has no JSPI (WebAssembly.Suspending); use Chrome or Edge 137 or later');
   const t0 = performance.now();
   const fetchBytes = async url => { const r = await fetch(url); if (!r.ok) throw Error(`${url}: ${r.status}`); return r.arrayBuffer(); };
-  const [coreBytes, graphicsBytes, metadata, netBytes, discModule] = await Promise.all([
-    fetchBytes('build/dhd_core.wasm'), fetchBytes('build/graphics.wasm'), fetch('build/imports.json').then(r => r.json()),
+  // The core (about 12 MB) is compiled while it downloads (compileStreaming), which also lets the
+  // browser keep the compiled code for the next visit; whether it is the threaded build is read from
+  // its first bytes on a second request (served from the same download).
+  const coreModulePromise = WebAssembly.compileStreaming(fetch('build/dhd_core.wasm'));
+  const threadedPromise = (async () => {
+    const reader = (await fetch('build/dhd_core.wasm')).body.getReader();
+    let head = new Uint8Array(0), answer = null;
+    while (answer === null) {
+      const { done, value } = await reader.read(); if (done) break;
+      const more = new Uint8Array(head.length + value.length); more.set(head); more.set(value, head.length); head = more;
+      answer = definesSharedMemoryHead(head);
+    }
+    reader.cancel().catch(() => {});
+    return !!answer;
+  })();
+  const [graphicsBytes, metadata, netBytes, discModule] = await Promise.all([
+    fetchBytes('build/graphics.wasm'), fetch('build/imports.json').then(r => r.json()),
     fetchBytes('build/dhd_net.wasm'), WebAssembly.compileStreaming(fetch('build/dhd_disc.wasm'))]);
   // The threaded build's core defines a shared memory; its graphics imports link to gqueue.wasm.
-  const threaded = definesSharedMemory(coreBytes);
+  const threaded = await threadedPromise;
   if (threaded) shareSafeDecoding();
-  const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([WebAssembly.compile(coreBytes), WebAssembly.compile(graphicsBytes),
+  const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([coreModulePromise, WebAssembly.compile(graphicsBytes),
     threaded ? WebAssembly.compileStreaming(fetch('build/gqueue.wasm')) : null, threaded ? WebAssembly.compileStreaming(fetch('build/vu.wasm')) : null]);
-  const disc = discSource(m);
-  say(`disc: ${(disc.size / 2 ** 30).toFixed(2)} GiB`);
+  // m.discUrl: this site's own disc (port/web/host, ?disc=KEY; disc_remote.js), else the player's file
+  const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say) : discSource(m);
+  if (!m.discUrl) say(`disc: ${(disc.size / 2 ** 30).toFixed(2)} GiB`);
+  else discPause = p => disc.pause(p);
   const keys = new Uint8Array(m.input, 0, 256), pads = new Int32Array(m.input, 256, 32);  // main.js: players 1-4
   const mouse = new Int32Array(m.input, 384, 16);  // main.js: HostMouse, then [12] riding
   const typed = new Int32Array(m.input, 448, 2 + 64);  // main.js: typed characters, written/read counts then a ring
@@ -115,6 +135,8 @@ async function start(m) {
     DHD_RENDER: 'native', DHD_SETTINGS: 'dhd.ini', ...(threaded ? { DHD_GRAPHICS_ORDERED: '1' } : {}),
     ...BROWSER_PC_SETTINGS, ...(m.env || {}) };
   const settings = await createSettings(env, say);
+  if (m.lowEnd && settings.fresh && env.DHD_SCALE === undefined && settings.save('scale', '1')) {
+    env.DHD_SCALE = '1'; say('settings: 1x resolution to start on this device (SETTINGS > Resolution changes it)'); }
   // The client reaches the game's memory through these: an address is folded as span() folds it.
   // Voice chat (finding 131): the settings live, the push-to-talk key as host_service_key_held reads
   // it, the page's microphone ring (main.js) and the page told when the game wants it.
@@ -125,6 +147,7 @@ async function start(m) {
   micNames = m.micNames || [];
   micAnswer = state => net.voiceMic(state);
   let core, graphics, queue, memory, bytes, dv, arena = 0x07000000, current = 65, csr = 0x1f80, field = 0;
+  const utf8Decoder = new TextDecoder();
   const strings = new Map(), files = new Map(), fibers = new Map(); let nextFile = 1, nextDir = 1; const dirs = new Map();
   const refresh = () => { bytes = new Uint8Array(memory.buffer); dv = new DataView(memory.buffer); };
   function fold(a) { a >>>= 0; const low = a & 0x1fffffff;
@@ -136,7 +159,7 @@ async function start(m) {
     } return a; }
   const span = (a, n) => { if (bytes.buffer !== memory.buffer) refresh(); a = fold(a); n >>>= 0;
     if (a + n > bytes.length) throw Error(`guest span OOB ${a.toString(16)}+${n.toString(16)}`); return bytes.subarray(a, a + n); };
-  const str = a => { if (bytes.buffer !== memory.buffer) refresh(); a = fold(a); const end = bytes.indexOf(0, a); return new TextDecoder().decode(bytes.subarray(a, end)); };
+  const str = a => { if (bytes.buffer !== memory.buffer) refresh(); a = fold(a); const end = bytes.indexOf(0, a); return utf8Decoder.decode(bytes.subarray(a, end)); };
   const intern = s => { if (strings.has(s)) return strings.get(s); const b = new TextEncoder().encode(s + '\0'); const a = arena; arena += b.length;
     if (arena > 0x07800000) throw Error('environment arena exhausted'); span(a, b.length).set(b); strings.set(s, a); return a; };
   class Exit extends Error { constructor(code) { super(`host_exit(${code})`); this.code = code; } }
@@ -159,6 +182,7 @@ async function start(m) {
   // on its frame clock here; at 60 a PC that can't keep up runs the game slower, above 60 the
   // update's step grows with real time (DHD_FPS_WALL), as on x64.
   const channel = new MessageChannel(); let wake = null; channel.port1.onmessage = () => { const w = wake; wake = null; w?.(); };
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));  // pacing waits on it (never notified): a timer without setTimeout's clamping
   const yieldTask = () => new Promise(r => { wake = r; channel.port2.postMessage(0); });
   let period = 1000 / 59.94, due = performance.now(), shown = 0, lastReport = performance.now(), lastField = 0;
   let riding = 0, held = new Int8Array(KEYS.length);
@@ -301,7 +325,13 @@ async function start(m) {
     host_service_host_disc_ready: () => 0, host_service_host_skip_movies: () => 1,
     // The online disc check (host_sdl.c's dhd_disc job): dhd_disc.wasm in a worker of its own
     // (disc_worker.js), as natively on a thread; poll answers as dhd_disc_check does.
+    // A streamed disc takes the site's answer, worked out from the same image at deploy time
+    // (disc_check.mjs): hashing it here would download the whole image.
     host_service_disc_check_start: iso => { if (discJob || str(iso) !== env.DHD_ISO) return 0;
+      if (m.discUrl) { const c = disc.check;
+        discJob = { answer: c && (c.code === 1) ? { code: 1, digest: c.digest, note: c.note || '' }
+          : { code: -1, digest: '', note: "this site's disc has no online check (deploy it with disc_check.mjs's answer)" } };
+        return 1; }
       const job = discJob = { answer: null }, w = new Worker('disc_worker.js', { type: 'module' });
       w.onmessage = e => { job.answer = e.data; w.terminate(); };
       w.onerror = e => { job.answer = { code: -1, digest: '', note: e.message }; w.terminate(); };
@@ -344,10 +374,11 @@ async function start(m) {
       soundFrames += frames;
       const src = new Int16Array(span(a, frames * 4).slice().buffer), h = ring.head, cap = ring.frames;
       net.voiceMix(src);  // the others' voices (voice chat), as natively in the output
-      const w = Atomics.load(h, 0), r = Atomics.load(h, 1), free = cap - 1 - ((w - r + cap) % cap);
-      const n = Math.min(frames, free);
-      for (let i = 0; i < n; i++) { const at = ((w + i) % cap) * 2; ring.data[at] = src[i * 2]; ring.data[at + 1] = src[i * 2 + 1]; }
-      Atomics.store(h, 0, (w + n) % cap);
+      // running frame counts (audio.js): free is the ring less what is queued; a full ring drops the rest
+      const w = Atomics.load(h, 0), r = Atomics.load(h, 1), free = cap - ((w - r) | 0);
+      const n = Math.max(0, Math.min(frames, free));
+      for (let i = 0; i < n; i++) { const at = (((w + i) >>> 0) % cap) * 2; ring.data[at] = src[i * 2]; ring.data[at + 1] = src[i * 2 + 1]; }
+      Atomics.store(h, 0, (w + n) | 0);
     },
     // The VBLANK's picture, then pacing; the only place the game thread lets the browser in.
     // web_present draws the scanout onto the canvas surface (it never suspends).
@@ -373,11 +404,12 @@ async function start(m) {
       if (now - lastReport >= 1000) {
         post('status', { field, fps: (field - lastField) * 1000 / (now - lastReport), shown, size: size ? `${size >>> 16}x${size & 0xffff}` : '-',
           draws: stats(0), dispatches: stats(1), reads: stats(2), riding, sound: +(soundFrames / 48000).toFixed(1),
-          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1 });
+          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null });
+        disc.riding?.(riding);  // a streamed disc's background download waits while riding (disc_store.js)
         lastReport = now; lastField = field;
       }
       due = Math.max(due + period, now - 4 * period);
-      if (due > now + 1) await new Promise(r => setTimeout(r, due - now)); else await yieldTask();
+      if (due > now + 1) await Atomics.waitAsync(sleeper, 0, 0, due - now).value; else await yieldTask();
     }),
   };
   const noops = `host_sleep_ms host_wait_wall host_dpi_aware host_callbacks_drain host_frame_registers host_frame_video host_capture_name

@@ -2,10 +2,13 @@
 // mouse (or touch) and sound through SharedArrayBuffers (the worker never returns to its event loop mid-field, so
 // messages would wait). Needs a cross-origin isolated page: serve.mjs sends COOP/COEP.
 import { startSettings } from './settings.js';
+import { createTouch } from './touch.js';
 const $ = id => document.getElementById(id);
 const status = $('status'), log = $('log'), canvas = $('screen');
 const params = new URLSearchParams(location.search);
-const addLog = text => { log.textContent += text + '\n'; log.scrollTop = log.scrollHeight; };
+// The log keeps its last 400 lines (a long session's text never grows the page's work per line).
+const addLog = text => { log.append(text + '\n'); while (log.childNodes.length > 400) log.firstChild.remove();
+  if (!log.hidden) log.scrollTop = log.scrollHeight; };
 
 if (!crossOriginIsolated)  // on the start card too: the status line is in the menu
   status.textContent = document.querySelector('.note').textContent = 'This page needs cross-origin isolation: start it with port/web/serve.mjs.';
@@ -20,7 +23,7 @@ const mouse = new Int32Array(input, 384, 16);
 const typed = new Int32Array(input, 448, 2 + 64);
 function type(c) { const w = Atomics.load(typed, 0); if (w - Atomics.load(typed, 1) >= 64) return;
   Atomics.store(typed, 2 + (w & 63), c); Atomics.store(typed, 0, w + 1); }
-const audio = new SharedArrayBuffer(8 + 48000 / 4 * 4);  // 0.25 s of 48 kHz stereo
+const audio = new SharedArrayBuffer(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
 // Voice chat's microphone (finding 131): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
 // then 1 s of samples; the worker's voice chat (net.js) reads it 20 ms at a time.
 const mic = new SharedArrayBuffer(8 + 48000 * 2);
@@ -34,6 +37,9 @@ function vk(code) {
   const m = /^Key([A-Z])$/.exec(code); return m ? m[1].charCodeAt(0) : 0;
 }
 let running = false;
+let siteReady = Promise.resolve();  // site.json read (below): start waits for it
+// the on-screen controls (touch.js): their menu button opens the page menu, as ` does
+const touch = createTouch({ onMenu: () => toggleMenu() });
 addEventListener('keydown', e => {
   if (e.code === 'Backquote' && running && !e.repeat) { e.preventDefault(); toggleMenu(); return; }  // not a game key (vk: 0)
   if (running && !e.altKey && !e.ctrlKey && !e.metaKey) {  // the worker keeps these only while a field is open
@@ -44,6 +50,8 @@ addEventListener('keydown', e => {
   Atomics.store(keys, k, 1); e.preventDefault(); });
 addEventListener('keyup', e => { const k = vk(e.code); if (k) Atomics.store(keys, k, 0); });
 addEventListener('blur', () => keys.fill(0));
+// A hidden page gets no frames, so pollPads stops: let go of everything rather than hold the last state.
+document.addEventListener('visibilitychange', () => { if (document.hidden) { keys.fill(0); for (let i = 0; i < 32; i += 8) Atomics.store(pads, i, 0); } });
 // Ctrl+V into a field: the pasted text, as text_input.c takes the clipboard's.
 addEventListener('paste', e => { const t = e.clipboardData?.getData('text') || ''; if (running) for (const ch of t.slice(0, 64)) type(ch.codePointAt(0)); });
 
@@ -53,12 +61,19 @@ function pollPads() {
   const list = [...(navigator.getGamepads?.() || [])].filter(p => p && p.mapping === 'standard').slice(0, 4);
   for (let port = 0; port < 4; port++) {
     const p = list[port], o = port * 8;
-    if (!p) { Atomics.store(pads, o, 0); continue; }
-    let b = 0; p.buttons.forEach((x, i) => { if (x.pressed && GP[i]) b |= GP[i]; });
     const axis = v => Math.max(0, Math.min(255, Math.round(128 + (Math.abs(v) < 0.12 ? 0 : v) * 127.5)));
-    Atomics.store(pads, o + 1, b);
-    Atomics.store(pads, o + 2, axis(p.axes[2] ?? 0)); Atomics.store(pads, o + 3, axis(p.axes[3] ?? 0));
-    Atomics.store(pads, o + 4, axis(p.axes[0] ?? 0)); Atomics.store(pads, o + 5, axis(p.axes[1] ?? 0));
+    const pad = { buttons: 0, rx: 128, ry: 128, lx: 128, ly: 128 };
+    if (p) {
+      p.buttons.forEach((x, i) => { if (x.pressed && GP[i]) pad.buttons |= GP[i]; });
+      pad.rx = axis(p.axes[2] ?? 0); pad.ry = axis(p.axes[3] ?? 0); pad.lx = axis(p.axes[0] ?? 0); pad.ly = axis(p.axes[1] ?? 0);
+    }
+    // player 1 also takes the on-screen controls (touch.js); a gamepad's first press hides them
+    if (port === 0 && p && touch.enabled && pad.buttons) touch.set(false);
+    const touched = port === 0 && touch.merge(pad, Atomics.load(mouse, 12) !== 0);
+    if (!p && !touched) { Atomics.store(pads, o, 0); continue; }
+    Atomics.store(pads, o + 1, pad.buttons);
+    Atomics.store(pads, o + 2, pad.rx); Atomics.store(pads, o + 3, pad.ry);
+    Atomics.store(pads, o + 4, pad.lx); Atomics.store(pads, o + 5, pad.ly);
     Atomics.store(pads, o, 1);
   }
   cursor();
@@ -113,6 +128,7 @@ for (const [id, section] of [['controlsButton', $('controls')], ['logButton', lo
     if (!section.hidden && section === log) log.scrollTop = log.scrollHeight; };
 menu.addEventListener('pointerdown', e => e.stopPropagation());
 canvas.addEventListener('pointerdown', () => { if (!menu.hidden) toggleMenu(false); });
+$('touchButton').onclick = () => { touch.set(!touch.enabled); $('touchButton').setAttribute('aria-pressed', String(touch.enabled)); };
 const openLog = () => { toggleMenu(true); log.hidden = false; $('logButton').setAttribute('aria-pressed', 'true'); };
 
 // The display's refresh rate (PC SETTINGS > Frame Rate > Monitor: the worker's host_display_hz):
@@ -142,6 +158,8 @@ async function shape(env) {
   return (parseInt(env.DHD_WIDESCREEN ?? start?.vars.DHD_WIDESCREEN ?? '0') || 0) !== 0;
 }
 
+// A phone, a tablet or a small device: the game's first run there starts at 1x resolution (worker.js).
+const lowEnd = () => touch.likely() || (navigator.deviceMemory ?? 8) <= 4;
 const screenShape = () => { const s = (screen.width || 16) / (screen.height || 9); return Math.min(4, Math.max(4 / 3, s)); };
 // SETTINGS > Microphone (finding 131): the page's recording devices by name, for the game's list;
 // names come once the browser has allowed a microphone. A choice is found again by its name.
@@ -150,8 +168,15 @@ async function micNames() {
     .map(d => d.label); } catch { return []; }
 }
 async function start(source) {
-  $('start').disabled = true; $('iso').disabled = true; running = true;
+  await siteReady;  // this site's server, if it is one, before the game reads its settings
+  $('start').disabled = true; $('iso').disabled = true; $('hosted').disabled = true; running = true;
   document.body.classList.add('running'); status.textContent = 'starting';
+  // A phone or tablet: the on-screen controls, the whole screen, and landscape where it can be locked
+  // (the Start tap is the gesture both need).
+  if (touch.likely()) {
+    touch.set(true); $('touchButton').setAttribute('aria-pressed', 'true');
+    document.documentElement.requestFullscreen?.().then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+  }
   const hz = refreshHz();
   try {
     const context = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
@@ -180,11 +205,13 @@ async function start(source) {
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
     else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
+      if (m.disc) discProgress(m.disc);
       document.title = `DHD ${m.fps.toFixed(1)} fps (field ${m.field})`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }
   };
   worker.onerror = e => addLog('worker error: ' + e.message);
+  gameWorker = worker;
   worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, displayHz: await hz,
-    monitorShape: screenShape(), micNames: await micNames() }, [offscreen]);
+    monitorShape: screenShape(), micNames: await micNames(), lowEnd: lowEnd() }, [offscreen]);
   const sendNames = async () => worker.postMessage({ type: 'mic-devices', names: await micNames() });
   navigator.mediaDevices?.addEventListener?.('devicechange', sendNames);
   micChanged = sendNames;
@@ -200,6 +227,18 @@ async function start(source) {
 // permission prompt, a device change) acts only after it, and a request already overtaken by a
 // later one is skipped, so a stream that opens after the game stopped wanting it is closed again
 // and two never write the ring at once.
+// A streamed disc's copy in this browser (disc_store.js): how much is here, and Pause/Resume.
+let gameWorker = null, discPaused = false;
+function discProgress(d) {
+  const pct = Math.floor(d.stored / d.count * 100);
+  $('discState').hidden = $('discPause').hidden = !d.kept;
+  if (d.stored >= d.count) { $('discState').textContent = 'Disc: all in this browser, nothing streams'; $('discPause').hidden = true; return; }
+  $('discState').textContent = `Disc in this browser: ${pct}% (${(d.stored * d.block / 2 ** 20).toFixed(0)} MiB)` +
+    (discPaused ? ', paused' : d.filling ? ', downloading' : ', waits while you ride') +
+    (d.net ? ` · blocks from the site: ${d.net}, avg ${d.avgMs.toFixed(0)} ms` : '');
+}
+$('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });
+  $('discPause').textContent = discPaused ? 'Resume disc download' : 'Pause disc download'; };
 let micChanged = () => {};
 let micQueue = Promise.resolve(), micWanted = 0;
 function microphone(on, device = '') {
@@ -268,3 +307,25 @@ else if (room) addLog(`?room=${room}: not a join code (6 letters and digits)`);
 // DHD_SETTINGS=none natively.
 if (params.get('iso') === 'test') start({ isoUrl: '/test-iso', env: { DHD_SETTINGS: 'none', ...env } });
 else shape(env);
+
+// A self-hosted site (port/web/host, finding 142) says what it offers in site.json; elsewhere
+// (serve.mjs, any static host) there is none and the page is as above.
+//   server: "same-origin": the site is its own online server, so the game connects there
+//           (?env.DHD_NET_SERVER still wins). No address is written anywhere: it is this page's.
+//   disc: true: the site streams its owner's disc to whoever has its private link, ?disc=KEY. The
+//           key is kept in this browser once used, so the plain address plays it too.
+const DISC_KEY = 'dhd-disc-key';
+siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(site => {
+  if (!site) return;
+  if (site.server === 'same-origin' && !('DHD_NET_SERVER' in env))
+    env.DHD_NET_SERVER = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+  if (!site.disc) return;
+  let key = params.get('disc') || '';
+  try { if (key) localStorage.setItem(DISC_KEY, key); else key = localStorage.getItem(DISC_KEY) || ''; } catch { /* no storage */ }
+  if (!/^[\w-]{8,128}$/.test(key)) return;
+  if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
+  $('hosted').hidden = $('hostedNote').hidden = false;
+  $('hosted').onclick = () => { $('hosted').disabled = true;
+    navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
+    start({ discUrl: `/disc/${encodeURIComponent(key)}`, env }); };
+});

@@ -13,6 +13,7 @@ profile). Tools read them; the game reads none of them.
 | `DHD_DEVCACHES` | downloaded toolchains and caches: wasi-sdk, WABT, SIMDe, binaryen, the object and cargo caches (default `~/DevCaches`) |
 | `DHD_SCRATCH` | scratch folder for test runs, server state and temporary files (default the system temp) |
 | `DHD_TEST_ISO` | your Downhill Domination (USA) disc image, for the test tools |
+| `DHD_ALLOW_SYSTEM_DRIVE` | `1`: the build tools may use C: (one-drive machines; off by default) |
 
 Never set `DHD_ISO` for your user: the game reads it, and it overrides dhd.ini in every game
 started from that environment, your own included. Keep all three off a small system drive.

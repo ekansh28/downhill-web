@@ -27,7 +27,9 @@ DIR = os.environ.get('DHD_OBJCACHE_DIR', str(DEVCACHES / 'dhd-objcache'))
 ENABLED = os.environ.get('DHD_OBJCACHE', '1') != '0'
 LIMIT = int(float(os.environ.get('DHD_OBJCACHE_GB', '30')) * 2**30)
 VERSION = b'dhd-objcache 1'
-if os.path.splitdrive(os.path.abspath(DIR))[0].upper() == 'C:' or (os.name != 'nt' and 'DHD_OBJCACHE_DIR' not in os.environ):
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from drives import on_system_drive  # noqa: E402
+if on_system_drive(DIR) or (os.name != 'nt' and 'DHD_OBJCACHE_DIR' not in os.environ):
     ENABLED = False  # the system drive stays free (global rule): no cache rather than one on C:; off Windows only a named one
 
 _lock = threading.Lock()

@@ -50,6 +50,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from drives import HOW, on_system_drive  # noqa: E402
 from gen_host64_imports import generate  # noqa: E402
 from host64_census import HOST_UNITS  # noqa: E402
 import objcache  # noqa: E402
@@ -241,8 +242,8 @@ def main():
     wabt = (a.wabt or t.wabt).resolve()
     simde = a.simde or Path(os.environ.get('SIMDE_DIR') or t.simde or str(DEVCACHES / 'simde-src'))
     out = (a.out or ROOT / t.out).resolve()
-    if out.drive.upper() == 'C:' or str(out).startswith('/mnt/c/'):
-        p.error('build output must stay off C:')
+    if on_system_drive(out):
+        p.error('build output must stay off C:' + HOW)
     work = out / 'work' if t.android else out  # Android: out holds the APK's libraries only
     scratch = work / 'tmp'
     for d in (out, work, work / 'obj', scratch):

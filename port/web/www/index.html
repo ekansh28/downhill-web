@@ -33,7 +33,42 @@
   #iso { position: absolute; width: 1px; height: 1px; opacity: 0; }
   #start { width: 100%; padding: 12px; border: 0; border-radius: 8px; background: var(--gold); color: #140f25;
     font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-  #start:disabled { cursor: default; background: #3b2f55; color: #9d90b8; }
+  #start:disabled, #hosted:disabled { cursor: default; background: #3b2f55; color: #9d90b8; }
+  #hosted { width: 100%; padding: 12px; border: 1px solid var(--gold); border-radius: 8px; background: rgba(255, 198, 90, .12);
+    font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+  #hosted[hidden], #hostedNote[hidden] { display: none; }
+  .disc-state { font-size: .8rem; color: var(--gold); }
+
+  /* On-screen controls (touch.js): over the picture, only while playing. Sizes follow the
+     screen's short side, so a phone and a tablet both get thumb-sized buttons. */
+  #touch { position: fixed; inset: 0; pointer-events: none; z-index: 5; --u: min(11vmin, 72px);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  #touch[hidden], body:not(.running) #touch { display: none; }
+  #touch .tb, #touch .stick { position: absolute; pointer-events: auto; touch-action: none; display: grid; place-items: center;
+    color: rgba(255, 255, 255, .85); background: rgba(20, 15, 37, .38); border: 2px solid rgba(255, 255, 255, .32);
+    font: 700 calc(var(--u) * .36)/1 var(--font); -webkit-tap-highlight-color: transparent; }
+  #touch .tb.on, #touch .stick.on { background: rgba(255, 198, 90, .45); border-color: var(--gold); }
+  #touch .stick { left: calc(var(--u) * .6); bottom: calc(var(--u) * .6); width: calc(var(--u) * 2.6); height: calc(var(--u) * 2.6); border-radius: 50%; }
+  #touch .knob { width: 45%; height: 45%; border-radius: 50%; background: rgba(255, 255, 255, .45); pointer-events: none; }
+  #touch .face { width: var(--u); height: var(--u); border-radius: 50%; font-size: calc(var(--u) * .5); }
+  #touch .tri { right: calc(var(--u) * 1.6); bottom: calc(var(--u) * 2.5); }
+  #touch .crs { right: calc(var(--u) * 1.6); bottom: calc(var(--u) * .4); }
+  #touch .sqr { right: calc(var(--u) * 2.65); bottom: calc(var(--u) * 1.45); }
+  #touch .cir { right: calc(var(--u) * .55); bottom: calc(var(--u) * 1.45); }
+  #touch .sh { width: calc(var(--u) * 1.5); height: calc(var(--u) * .75); border-radius: 10px; }
+  #touch .l2 { left: calc(var(--u) * .4); top: calc(var(--u) * .3); }
+  #touch .l1 { left: calc(var(--u) * .4); top: calc(var(--u) * 1.2); }
+  #touch .r2 { right: calc(var(--u) * .4); top: calc(var(--u) * .3); }
+  #touch .r1 { right: calc(var(--u) * .4); top: calc(var(--u) * 1.2); }
+  #touch .mid { top: calc(var(--u) * .3); width: calc(var(--u) * 1.4); height: calc(var(--u) * .55); border-radius: 999px; font-size: calc(var(--u) * .24); }
+  #touch .sel { left: calc(50% - var(--u) * 1.5); }
+  #touch .sta { left: calc(50% + var(--u) * .1); }
+  #touch .small { width: calc(var(--u) * .8); height: calc(var(--u) * .8); border-radius: 50%; font-size: calc(var(--u) * .28); }
+  #touch .l3 { left: calc(var(--u) * 3.5); bottom: calc(var(--u) * .5); }
+  #touch .r3 { right: calc(var(--u) * 3.7); bottom: calc(var(--u) * .3); }
+  #touch .menu-btn { left: 50%; transform: translateX(-50%); top: calc(var(--u) * 1.05); width: calc(var(--u) * .8); height: calc(var(--u) * .6);
+    border-radius: 8px; font-size: calc(var(--u) * .36); }
   .note { margin: 0; color: var(--dim); font-size: .82rem; }
 
   /* While playing: only the game. ` (Backquote, not a game key) opens the menu; a hint says so at
@@ -69,6 +104,9 @@
     </label>
     <input type="file" id="iso" accept=".iso,.bin,.img">
     <button id="start" disabled>Start</button>
+    <!-- a site with its own disc (port/web/host), opened by its private link (?disc=KEY): main.js -->
+    <button id="hosted" type="button" hidden>Play this site's disc</button>
+    <p class="note" id="hostedNote" hidden>Starts at once: the disc streams as you play and downloads into this browser in the background, so later sessions load from here.</p>
     <p class="note">USA disc (SCUS-97177) &middot; Chrome or Edge &middot; nothing is uploaded &middot; <kbd>`</kbd> menu in game</p>
   </div>
 </div>
@@ -77,12 +115,14 @@
 
 <div class="menu" id="menu" hidden>
   <div id="status">Ready</div>
+  <div id="discState" class="disc-state" hidden></div>
   <div class="row">
     <button id="fullscreen" type="button">Fullscreen</button>
     <button id="controlsButton" type="button" aria-pressed="false">Controls</button>
     <button id="logButton" type="button" aria-pressed="false">Log</button>
+    <button id="touchButton" type="button" aria-pressed="false">Touch controls</button>
   </div>
-  <div class="row"><button id="invite" type="button" hidden>Copy invite link</button></div>
+  <div class="row"><button id="invite" type="button" hidden>Copy invite link</button><button id="discPause" type="button" hidden>Pause disc download</button></div>
   <div id="controls" hidden>
     <div class="keys">
       <span><kbd>&larr;</kbd> <kbd>&uarr;</kbd> <kbd>&rarr;</kbd> <kbd>&darr;</kbd></span><span>Steer, menus</span>
@@ -95,6 +135,9 @@
       <span><kbd>Enter</kbd></span><span>Start</span>
       <span><kbd>Tab</kbd></span><span>Select</span>
     </div>
+    <p>On a phone or tablet the on-screen controls come up by themselves: the stick steers (and moves
+      in menus), &#x2715; pedals, &#x25b3; brakes, L3 powerslides, R3 sprints, &#x2630; opens this menu.
+      Turn the device sideways. Touch controls switches them.</p>
     <p>Mouse and gamepads work too. Settings: OPTIONS &gt; SETTINGS.</p>
   </div>
   <pre id="log" hidden></pre>

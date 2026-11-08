@@ -111,6 +111,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from drives import HOW, on_system_drive  # noqa: E402
 import build_launcher  # noqa: E402
 import discord_sdk  # noqa: E402
 import dxc  # noqa: E402
@@ -749,8 +750,8 @@ def main():
         sys.exit('version %r: MAJOR.MINOR.PATCH digits only (the updater and the server compare them)' % a.version)
     name = 'DownhillRevived-%s' % a.version
     out = (a.out or ROOT / 'build' / 'release' / ('%s-%s.zip' % (name, platform.zip_tag))).resolve()
-    if (ROOT / 'build').resolve() not in out.parents or out.drive.upper() == 'C:':
-        sys.exit('the zip goes under build/ (never tracked, never on C:)')
+    if (ROOT / 'build').resolve() not in out.parents or on_system_drive(out):
+        sys.exit('the zip goes under build/ (never tracked, never on C:)' + HOW)
     manifest_path = out.with_name('latest.json')
     page = '%s/tag/v%s' % (RELEASES, a.version)
     if a.merge:

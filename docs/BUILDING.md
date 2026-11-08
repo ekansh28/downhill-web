@@ -98,7 +98,9 @@ asks for your `.iso` the first time. `DHD_ISO=<path to iso>` in the environment 
 
 Keep the checkout, `DHD_DEVCACHES` (below) and the Rust toolchain off the C: drive: the 64-bit
 build and the Rust build refuse to write there, and `rustgs.py` needs `CARGO_HOME` and
-`RUSTUP_HOME` set to folders on another drive. The tools below are looked for under
+`RUSTUP_HOME` set to folders on another drive. A machine with one drive sets `DHD_ALLOW_SYSTEM_DRIVE=1`, which lifts
+that rule everywhere (`port/tools/drives.py`); `CARGO_HOME` and `RUSTUP_HOME` then default to
+rustup's own folders. The tools below are looked for under
 `DHD_DEVCACHES` (an environment variable; default `~/DevCaches`), with these folder names, or where
 their own variable or option says:
 

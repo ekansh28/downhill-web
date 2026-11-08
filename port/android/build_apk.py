@@ -30,6 +30,7 @@ import sys
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'port' / 'tools'))
+from drives import HOW, on_system_drive  # noqa: E402
 import sdl3  # noqa: E402
 
 OUT = ROOT / 'build' / 'android'
@@ -99,8 +100,8 @@ def main():
     a = ap.parse_args()
     for var in ('GRADLE_USER_HOME', 'ANDROID_USER_HOME'):
         value = os.environ.get(var, '')
-        if not value or os.path.splitdrive(os.path.abspath(value))[0].upper() == 'C:':
-            sys.exit('build_apk: %s must be set, off C: (%r)' % (var, value))
+        if not value or on_system_drive(value):
+            sys.exit('build_apk: %s must be set, off C: (%r)%s' % (var, value, HOW))
     libs = [OUT / 'lib' / 'arm64-v8a' / n for n in ('libmain.so', 'libSDL3.so')]
     wasm = a.wasm or (ROOT / 'build' / 'wasm' / 'dhd_core.wasm')
     if a.wasm or not all(p.exists() for p in libs):

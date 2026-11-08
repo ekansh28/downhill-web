@@ -19,6 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from drives import HOW, ALLOWED as SYSTEM_DRIVE_ALLOWED, on_system_drive  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / 'port' / 'launcher'
 RELEASE_DIR = LAUNCHER / 'src-tauri' / 'target' / 'release'
@@ -42,8 +45,8 @@ def homes():
     out = {}
     for var, name in (('CARGO_HOME', 'cargo'), ('RUSTUP_HOME', 'rustup')):
         value = os.environ.get(var)
-        if os.name == 'nt' and (not value or os.path.splitdrive(os.path.normpath(value))[0].upper() == 'C:'):
-            sys.exit('%s must be set, off C: (the Rust toolchain lives on F:)' % var)
+        if os.name == 'nt' and not SYSTEM_DRIVE_ALLOWED and (not value or on_system_drive(value)):
+            sys.exit('%s must be set, off C:%s' % (var, HOW))
         out[name] = value or os.path.join(os.path.expanduser('~'), '.' + name)  # rustup's own defaults
     return out
 
