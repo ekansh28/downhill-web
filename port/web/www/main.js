@@ -12,12 +12,12 @@ const addLog = text => { log.append(text + '\n'); while (log.childNodes.length >
 
 // What the game needs from the browser, said on the start card before anything starts: JSPI (the
 // game's threads, WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's
-// engine, which has no JSPI yet.
+// engine, which has JSPI from Safari 27 (iOS and iPadOS 27).
 const unsupported = typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
 if (unsupported) {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   document.querySelector('.note').textContent = ios
-    ? 'iPhone and iPad cannot run the game yet: their browsers (all of them use the Safari engine) lack a feature it needs (JSPI). Play on a PC, or an Android phone with Chrome.'
+    ? 'This iPhone or iPad browser lacks JSPI, which the game needs. It came with iOS and iPadOS 27 (Safari 27): update iOS, and keep Lockdown Mode off (it turns WebAssembly features off).'
     : unsupported === 'jspi'
       ? 'This browser lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome).'
       : 'This browser has no WebGPU. Use Chrome or Edge 137 or later, with graphics acceleration on.';
