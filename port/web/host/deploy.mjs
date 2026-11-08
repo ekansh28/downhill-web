@@ -71,7 +71,7 @@ function withoutNames(b) {
 
 // 1. the page and the modules, laid out as serve.mjs serves them
 const www = path.join(root, 'port/web/www'), web = path.join(root, 'build/web');
-const modules = ['dhd_core.wasm', 'graphics.wasm', 'gqueue.wasm', 'vu.wasm', 'dhd_settings.wasm', 'dhd_net.wasm', 'dhd_disc.wasm',
+const modules = ['dhd_core.wasm', 'graphics.wasm', 'gqueue.wasm', 'vu.wasm', 'dhd_settings.wasm', 'dhd_net.wasm', 'dhd_voice.wasm', 'dhd_disc.wasm',
   'imports.json', 'renderer/dhd_render.js', 'renderer/dhd_render_bg.wasm'];
 for (const m of modules) if (!fs.existsSync(path.join(web, m))) die(`build/web/${m} is missing: run python port/web/build.py`);
 // everything but the disc's files, which are written once and kept between deploys
@@ -92,6 +92,15 @@ fs.writeFileSync(path.join(pub, '_headers'), [
 // 2. the online disc check of the image the site streams, kept while the image is unchanged
 const vars = { MIN_VERSION: site.minVersion || '0.7.6', LEADERBOARD_SUBMIT_MAX: '30' };
 const r2 = [];
+// The boot list (www/disc_store.js records it; record_boot.mjs saves it): the page fetches these blocks before Start.
+const bootFile = path.join(out, 'disc-boot.json');
+if (fs.existsSync(bootFile)) {
+  const order = JSON.parse(fs.readFileSync(bootFile, 'utf8')), parts = [];
+  for (let k = 0; k < order.length;) { let j = k; while (j + 1 < order.length && order[j + 1] === order[j] + 1) j++;
+    parts.push(j > k ? `${order[k]}-${order[j]}` : `${order[k]}`); k = j + 1; }
+  vars.DISC_BOOT = parts.join(',');
+  console.log(`deploy: boot list of ${order.length} blocks (${vars.DISC_BOOT.length} characters)`);
+}
 if (site.disc) {
   const d = site.disc, fromAssets = d.source === 'assets';
   if (!fromAssets) {

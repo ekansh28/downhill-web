@@ -3,6 +3,7 @@
 // messages would wait). Needs a cross-origin isolated page: serve.mjs sends COOP/COEP.
 import { startSettings } from './settings.js';
 import { createTouch } from './touch.js';
+import { voiceRingBuffer } from './net_ring.js';
 const $ = id => document.getElementById(id);
 const status = $('status'), log = $('log'), canvas = $('screen');
 const params = new URLSearchParams(location.search);
@@ -39,8 +40,11 @@ function type(c) { const w = Atomics.load(typed, 0); if (w - Atomics.load(typed,
   Atomics.store(typed, 2 + (w & 63), c); Atomics.store(typed, 0, w + 1); }
 const audio = new SharedArrayBuffer(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
 // Voice chat's microphone (finding 131): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
-// then 1 s of samples; the worker's voice chat (net.js) reads it 20 ms at a time.
+// then 1 s of samples; voice chat in the net worker (net_worker.js) reads it 20 ms at a time.
 const mic = new SharedArrayBuffer(8 + 48000 * 2);
+// The others' voices (finding 144): the net worker mixes them into this ring, audio.js's dhd-voice
+// plays it beside the game's sound (net_ring.js has its layout).
+const voice = voiceRingBuffer();
 let soundContext = null, micOpen = null;  // the page's AudioContext; the microphone while it is open
 
 // KeyboardEvent.code -> the Windows virtual-key code keyboard.c's table uses (US places).
@@ -142,6 +146,42 @@ for (const [id, section] of [['controlsButton', $('controls')], ['logButton', lo
     if (!section.hidden && section === log) log.scrollTop = log.scrollHeight; };
 menu.addEventListener('pointerdown', e => e.stopPropagation());
 canvas.addEventListener('pointerdown', () => { if (!menu.hidden) toggleMenu(false); });
+// Saves (the memory card and dhd.ini, kept in this browser's IndexedDB, vfs.js and settings.js) to
+// a file and back: a backup, or a move to another browser. Import before Start (the game holds its
+// copy while it runs).
+const SAVE_DBS = ['downhill-revived'];
+async function idb(name) { return new Promise((ok, no) => { const r = indexedDB.open(name); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }); }
+async function exportSaves() {
+  const out = {};
+  for (const name of SAVE_DBS.concat((await indexedDB.databases?.() || []).map(d => d.name).filter(n => /settings/i.test(n)))) {
+    const db = await idb(name); out[name] = {};
+    for (const store of db.objectStoreNames) out[name][store] = await new Promise(ok => { const rows = [], r = db.transaction(store).objectStore(store).openCursor();
+      r.onsuccess = () => { const c = r.result; if (!c) return ok(rows); const v = c.value;
+        rows.push([c.key, v?.data instanceof Uint8Array ? { ...v, data: Array.from(v.data) } : v]); c.continue(); }; });
+    db.close();
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+  a.download = `downhill-revived-saves-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+}
+async function importSaves(file) {
+  const all = JSON.parse(await file.text());
+  for (const [name, stores] of Object.entries(all)) {
+    const db = await new Promise((ok, no) => { const r = indexedDB.open(name);
+      r.onupgradeneeded = () => { for (const s of Object.keys(stores)) r.result.createObjectStore(s); };
+      r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+    for (const [store, rows] of Object.entries(stores)) {
+      if (!db.objectStoreNames.contains(store)) continue;
+      const t = db.transaction(store, 'readwrite'), s = t.objectStore(store);
+      for (const [k, v] of rows) s.put(v && Array.isArray(v.data) ? { ...v, data: new Uint8Array(v.data) } : v, k);
+      await new Promise(ok => { t.oncomplete = ok; t.onerror = ok; });
+    }
+    db.close();
+  }
+}
+$('exportSaves').onclick = () => exportSaves().catch(e => addLog(`saves: not exported (${e.message})`));
+$('importSaves').onchange = () => { const f = $('importSaves').files[0]; if (!f) return;
+  importSaves(f).then(() => { $('importLabel').textContent = 'Saves imported'; }, e => { $('importLabel').textContent = `Not imported: ${e.message}`; }); };
 $('touchButton').onclick = () => { touch.set(!touch.enabled); $('touchButton').setAttribute('aria-pressed', String(touch.enabled)); };
 const openLog = () => { toggleMenu(true); log.hidden = false; $('logButton').setAttribute('aria-pressed', 'true'); };
 
@@ -183,6 +223,7 @@ async function micNames() {
 }
 async function start(source) {
   await siteReady;  // this site's server, if it is one, before the game reads its settings
+  navigator.storage?.persist?.().catch(() => {});  // keep the saves and the disc when the browser is short of space
   $('start').disabled = true; $('iso').disabled = true; $('hosted').disabled = true; running = true;
   document.body.classList.add('running'); status.textContent = 'starting';
   // A phone or tablet: the on-screen controls, the whole screen, and landscape where it can be locked
@@ -196,6 +237,7 @@ async function start(source) {
     const context = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
     await context.audioWorklet.addModule('audio.js');
     new AudioWorkletNode(context, 'dhd-ring', { outputChannelCount: [2], processorOptions: { ring: audio } }).connect(context.destination);
+    new AudioWorkletNode(context, 'dhd-voice', { outputChannelCount: [2], processorOptions: { ring: voice } }).connect(context.destination);
     context.resume();
     soundContext = context;
   } catch (e) { addLog(`no sound: ${e}`); }
@@ -221,11 +263,12 @@ async function start(source) {
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
     else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
       if (m.disc) discProgress(m.disc);
+      if (m.discBoot) window.dhdDiscBoot = m.discBoot;  // deploy checks read it (disc boot list)
       document.title = `DHD ${m.fps.toFixed(1)} fps (field ${m.field})`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }
   };
   worker.onerror = e => addLog('worker error: ' + e.message);
   gameWorker = worker;
-  worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, displayHz: await hz,
+  worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, voice, displayHz: await hz,
     monitorShape: screenShape(), micNames: await micNames(), lowEnd: lowEnd() }, [offscreen]);
   const sendNames = async () => worker.postMessage({ type: 'mic-devices', names: await micNames() });
   navigator.mediaDevices?.addEventListener?.('devicechange', sendNames);
@@ -316,13 +359,15 @@ const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
 let inviteCode = '';
 function invite(code, inRoom = true) {
   if (code) inviteCode = code; else if (!inRoom) inviteCode = '';
-  $('invite').hidden = !inviteCode;
+  $('invite').hidden = $('inviteFloat').hidden = !inviteCode;
 }
+$('inviteFloat').onclick = () => $('invite').onclick();
 $('invite').onclick = () => {
   const link = `${location.origin}${location.pathname}?room=${inviteCode}`;
   navigator.clipboard?.writeText(link).then(() => { $('invite').textContent = 'Invite link copied'; },
     e => addLog(`clipboard: ${e.message}`));
-  setTimeout(() => { $('invite').textContent = 'Copy invite link'; }, 1500);
+  $('inviteFloat').textContent = 'Link copied';
+  setTimeout(() => { $('invite').textContent = 'Copy invite link'; $('inviteFloat').textContent = 'Invite friends'; }, 1500);
 };
 // Test hook: serve.mjs --iso <path> serves that file as /test-iso to localhost only, and
 // ?iso=test starts with it at once (headless checks; the ISO never leaves the machine).
@@ -343,6 +388,24 @@ else shape(env);
 //   disc: true: the site streams its owner's disc to whoever has its private link, ?disc=KEY. The
 //           key is kept in this browser once used, so the plain address plays it too.
 const DISC_KEY = 'dhd-disc-key';
+// Fast first start: while the player is still on the start card, the blocks the game reads first
+// (the site's boot list, recorded by deploy.mjs from a real start) are fetched by the same URLs the
+// disc store uses, so they wait in the browser's HTTP cache (immutable) and the start reads them
+// locally. Once per browser and disc version: after that they are in the disc's copy.
+async function warmDisc(base) {
+  try {
+    const info = await (await fetch(`${base}/info`, { cache: 'no-store' })).json();
+    const list = info.boot || [], done = `dhd-disc-warm-${info.tag}`;
+    if (!list.length || localStorage.getItem(done)) return;
+    let next = 0, got = 0;
+    const lane = async () => { while (next < list.length && !running) {
+      const i = list[next++];
+      try { await (await fetch(`${base}/${info.tag}/${i}`)).arrayBuffer(); got++; } catch { /* the store fetches it later */ }
+      $('hostedNote').textContent = `Getting the game ready: ${Math.round(got / list.length * 100)}% (you can start now)`; } };
+    await Promise.all(Array.from({ length: 6 }, lane));
+    if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
+  } catch { /* nothing to warm: the game streams as before */ }
+}
 siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(site => {
   if (!site) return;
   if (site.server === 'same-origin' && !('DHD_NET_SERVER' in env))
@@ -353,6 +416,7 @@ siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() 
   if (!/^[\w-]{8,128}$/.test(key)) return;
   if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
   $('hosted').hidden = $('hostedNote').hidden = false;
+  warmDisc(`/disc/${encodeURIComponent(key)}`);
   $('hosted').onclick = () => { $('hosted').disabled = true;
     navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
     start({ discUrl: `/disc/${encodeURIComponent(key)}`, env }); };

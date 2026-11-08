@@ -97,9 +97,11 @@ async function start(m) {
     reader.cancel().catch(() => {});
     return !!answer;
   })();
-  const [graphicsBytes, metadata, netBytes, discModule] = await Promise.all([
+  // dhd_voice.wasm: voice chat, for the net worker (net.js); without it the game plays with none
+  const [graphicsBytes, metadata, netBytes, voiceBytes, discModule] = await Promise.all([
     fetchBytes('build/graphics.wasm'), fetch('build/imports.json').then(r => r.json()),
-    fetchBytes('build/dhd_net.wasm'), WebAssembly.compileStreaming(fetch('build/dhd_disc.wasm'))]);
+    fetchBytes('build/dhd_net.wasm'), fetchBytes('build/dhd_voice.wasm').catch(e => { say(`voice: ${e.message}`); return null; }),
+    WebAssembly.compileStreaming(fetch('build/dhd_disc.wasm'))]);
   // The threaded build's core defines a shared memory; its graphics imports link to gqueue.wasm.
   const threaded = await threadedPromise;
   if (threaded) shareSafeDecoding();
@@ -141,12 +143,13 @@ async function start(m) {
   if (m.lowEnd && settings.fresh && env.DHD_SCALE === undefined && settings.save('scale', '1')) {
     env.DHD_SCALE = '1'; say('settings: 1x resolution to start on this device (SETTINGS > Resolution changes it)'); }
   // The client reaches the game's memory through these: an address is folded as span() folds it.
-  // Voice chat (finding 131): the settings live, the push-to-talk key as host_service_key_held reads
-  // it, the page's microphone ring (main.js) and the page told when the game wants it.
+  // Its sockets and voice chat are the net worker's (findings 131, 144): voice's settings live, the
+  // page's keys for push-to-talk (a text field open holds them: net.textInput), the page's
+  // microphone and voice rings (main.js), and the page told when the game wants the microphone.
   const net = await createNet(netBytes, { bytes: (a, n) => span(a, n), strlen: a => { if (bytes.buffer !== memory.buffer) refresh();
     const at = fold(a); return bytes.indexOf(0, at) - at; } }, say,
-    { env, keyHeld: k => k > 0 && k < 256 && !textActive && Atomics.load(keys, k) !== 0, mic: m.mic || null,
-      wantMic: (on, device) => post('mic', { on, device }) });
+    { env, input: m.input, mic: m.mic || null, voice: m.voice || null, voiceBytes,
+      wantMic: (on, device) => post('mic', { on, device }), room: code => post('room', { code, inRoom: !!code }) });
   micNames = m.micNames || [];
   micAnswer = state => net.voiceMic(state);
   let core, graphics, queue, memory, bytes, dv, arena = 0x07000000, current = 65, csr = 0x1f80, field = 0;
@@ -189,6 +192,9 @@ async function start(m) {
   const yieldTask = () => new Promise(r => { wake = r; channel.port2.postMessage(0); });
   let period = 1000 / 59.94, due = performance.now(), shown = 0, lastReport = performance.now(), lastField = 0;
   let riding = 0, held = new Int8Array(KEYS.length);
+  const stallSpec = /^(\d+)(?:,(\d+(?:\.\d+)?))?$/.exec(env.DHD_WEB_STALL || '');
+  const stall = stallSpec ? { ms: +stallSpec[1], every: +(stallSpec[2] || 5) } : null;
+  let stallAt = performance.now() + 5000, stalls = 0;
   // The game's text fields (port/hle/text_input.c's rules): while one is open the typing keys are its
   // (the arrows still move the pad picker), and a key typed there presses nothing until let go.
   const ARROWS = new Set([0x25, 0x26, 0x27, 0x28]), blocked = new Uint8Array(256);
@@ -356,9 +362,9 @@ async function start(m) {
     host_service_movie_update: () => 0, host_service_movie_playing: () => 0,
     host_service_host_poll_dump: () => 0,
     host_service_graphics_threaded: () => 1, host_service_texpack_available: () => 0,
-    host_service_text_input_begin: () => { textActive = true; typedClear(); },
+    host_service_text_input_begin: () => { textActive = true; net.textInput(true); typedClear(); },
     host_service_text_input_end: () => { if (textActive) for (const k of KEYS) if (!ARROWS.has(k[0]) && Atomics.load(keys, k[0])) blocked[k[0]] = 1;
-      textActive = false; typedClear(); },
+      textActive = false; net.textInput(false); typedClear(); },
     host_service_text_input_edit: (at, capacity, allowed) => textEdit(at, capacity, allowed),
     // The online chat's Y (text_input.c): held, outside a text field. main.js keeps keys by place.
     host_service_key_held: k => +(k > 0 && k < 256 && !textActive && Atomics.load(keys, k) !== 0),
@@ -369,14 +375,13 @@ async function start(m) {
     host_service_presence: at => { if (bytes.buffer !== memory.buffer) refresh();
       const kind = dv.getInt32(at, true), inRoom = kind === 4 || kind === 5, code = inRoom ? str(at + 44) : '';
       if (code !== presenceRoom || inRoom !== presenceIn) { presenceRoom = code; presenceIn = inRoom; post('room', { code, inRoom }); } },
-    // Online (net.js: port/net's client as dhd_net.wasm under the worker's WebSocket and fetch).
+    // Online (net.js: port/net's client as dhd_net.wasm over the net worker's WebSocket).
     ...net,
     host_pacing_period: () => 1 / 60,
     host_pacing_config: p => { period = p * 1000; },
     host_sound_write: (a, frames) => {
       soundFrames += frames;
       const src = new Int16Array(span(a, frames * 4).slice().buffer), h = ring.head, cap = ring.frames;
-      net.voiceMix(src);  // the others' voices (voice chat), as natively in the output
       // running frame counts (audio.js): free is the ring less what is queued; a full ring drops the rest
       const w = Atomics.load(h, 0), r = Atomics.load(h, 1), free = cap - ((w - r) | 0);
       const n = Math.max(0, Math.min(frames, free));
@@ -407,10 +412,15 @@ async function start(m) {
       if (now - lastReport >= 1000) {
         post('status', { field, fps: (field - lastField) * 1000 / (now - lastReport), shown, size: size ? `${size >>> 16}x${size & 0xffff}` : '-',
           draws: stats(0), dispatches: stats(1), reads: stats(2), riding, sound: +(soundFrames / 48000).toFixed(1),
-          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null });
+          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null, discBoot: disc.bootOrder?.() || null,
+          net: net.stats(), stalls });
         disc.riding?.(riding);  // a streamed disc's background download waits while riding (disc_store.js)
         lastReport = now; lastField = field;
       }
+      // Test hook: DHD_WEB_STALL=ms[,seconds] busies this worker ms every seconds (built-in 5), a
+      // long field as a slow PC has, to show the online game and voice chat don't wait for it.
+      if (stall && now >= stallAt) { const end = performance.now() + stall.ms; while (performance.now() < end); stalls++;
+        stallAt = performance.now() + stall.every * 1000; }
       due = Math.max(due + period, now - 4 * period);
       if (due > now + 1) await Atomics.waitAsync(sleeper, 0, 0, due - now).value; else await yieldTask();
     }),

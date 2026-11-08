@@ -388,6 +388,12 @@ findings 039-047, 053-054, 065 and 072 and in this file's history.
   Windows and the browser (libopus for win-x64, and for wasm32 in `dhd_net.wasm` with the page's
   microphone worklet). `port/tools/test_voice.py`: 21 of 21; `port/web/check_net.mjs` hears a
   browser client's voice through upstream's 0.7.6 server unchanged.
+- Browser online in its own worker (finding 144): the WebSockets and voice chat
+  (`dhd_voice.wasm`) run in `net_worker.js`, the lobby client stays in the game worker over SAB
+  rings with each event's real time. Server pings are answered and a stalled race is kept heard
+  by the net worker. The others' voices play from their own `dhd-voice` worklet in real time.
+  `check_net.mjs` stalls the game side 2.6 s, 0.5 s and 1.5 s: pings answered, voice unbroken,
+  round trip true. Not yet seen in a full two-player browser race.
 - Rider names beside the race's track bar dots (finding 129).
 - 2026-11-01: this line's findings that reused upstream's numbers (118-126) are 133-140, and the
   controls and live settings, cited as "finding 124" without a file, are finding 141.
