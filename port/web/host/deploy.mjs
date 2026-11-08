@@ -71,7 +71,7 @@ function withoutNames(b) {
 
 // 1. the page and the modules, laid out as serve.mjs serves them
 const www = path.join(root, 'port/web/www'), web = path.join(root, 'build/web');
-const modules = ['dhd_core.wasm', 'graphics.wasm', 'gqueue.wasm', 'vu.wasm', 'dhd_settings.wasm', 'dhd_net.wasm', 'dhd_disc.wasm',
+const modules = ['dhd_core.wasm', 'graphics.wasm', 'gqueue.wasm', 'vu.wasm', 'dhd_settings.wasm', 'dhd_net.wasm', 'dhd_voice.wasm', 'dhd_disc.wasm',
   'imports.json', 'renderer/dhd_render.js', 'renderer/dhd_render_bg.wasm'];
 for (const m of modules) if (!fs.existsSync(path.join(web, m))) die(`build/web/${m} is missing: run python port/web/build.py`);
 // everything but the disc's files, which are written once and kept between deploys

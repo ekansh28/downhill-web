@@ -3,6 +3,7 @@
 // messages would wait). Needs a cross-origin isolated page: serve.mjs sends COOP/COEP.
 import { startSettings } from './settings.js';
 import { createTouch } from './touch.js';
+import { voiceRingBuffer } from './net_ring.js';
 const $ = id => document.getElementById(id);
 const status = $('status'), log = $('log'), canvas = $('screen');
 const params = new URLSearchParams(location.search);
@@ -39,8 +40,11 @@ function type(c) { const w = Atomics.load(typed, 0); if (w - Atomics.load(typed,
   Atomics.store(typed, 2 + (w & 63), c); Atomics.store(typed, 0, w + 1); }
 const audio = new SharedArrayBuffer(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
 // Voice chat's microphone (finding 131): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
-// then 1 s of samples; the worker's voice chat (net.js) reads it 20 ms at a time.
+// then 1 s of samples; voice chat in the net worker (net_worker.js) reads it 20 ms at a time.
 const mic = new SharedArrayBuffer(8 + 48000 * 2);
+// The others' voices (finding 144): the net worker mixes them into this ring, audio.js's dhd-voice
+// plays it beside the game's sound (net_ring.js has its layout).
+const voice = voiceRingBuffer();
 let soundContext = null, micOpen = null;  // the page's AudioContext; the microphone while it is open
 
 // KeyboardEvent.code -> the Windows virtual-key code keyboard.c's table uses (US places).
@@ -233,6 +237,7 @@ async function start(source) {
     const context = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
     await context.audioWorklet.addModule('audio.js');
     new AudioWorkletNode(context, 'dhd-ring', { outputChannelCount: [2], processorOptions: { ring: audio } }).connect(context.destination);
+    new AudioWorkletNode(context, 'dhd-voice', { outputChannelCount: [2], processorOptions: { ring: voice } }).connect(context.destination);
     context.resume();
     soundContext = context;
   } catch (e) { addLog(`no sound: ${e}`); }
@@ -263,7 +268,7 @@ async function start(source) {
   };
   worker.onerror = e => addLog('worker error: ' + e.message);
   gameWorker = worker;
-  worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, displayHz: await hz,
+  worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, voice, displayHz: await hz,
     monitorShape: screenShape(), micNames: await micNames(), lowEnd: lowEnd() }, [offscreen]);
   const sendNames = async () => worker.postMessage({ type: 'mic-devices', names: await micNames() });
   navigator.mediaDevices?.addEventListener?.('devicechange', sendNames);
