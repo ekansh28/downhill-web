@@ -143,6 +143,12 @@ host_service_gs_window_apply host_service_gs_present_options_apply host_service_
 host_service_text_input_begin host_service_text_input_end host_service_host_backtrace host_service_presence host_service_voice_frame host_service_voice_place host_service_voice_mute host_service_voice_drop host_service_voice_state`.split(/\s+/);
 for(const n of noops)impl[n]=()=>{};
 for(const n of ['host_service_key_held','host_service_net_racing','host_service_net_seconds','host_service_net_server_ms','host_heartbeat_eip','host_service_launcher_open','host_service_presence_join'])impl[n]=()=>0;
+// Offline: no lobby and no chat (NET_IDLE, all zero; port/hle/online.c asks for the lobby outside
+// online races too). Their sizes are the net module's (build/web/dhd_net.wasm, as www/net.js).
+{const nm=new WebAssembly.Module(fs.readFileSync(option('--net',path.join(root,'build/web/dhd_net.wasm'))));
+  const stub={};for(const i of WebAssembly.Module.imports(nm))(stub[i.module]??={})[i.name]=()=>0;
+  const x=new WebAssembly.Instance(nm,stub).exports,lobby=x.web_net_lobby_size(),chat=x.web_net_chat_size();
+  impl.host_service_net_get_lobby=a=>{span(a,lobby).fill(0);};impl.host_service_net_get_chat=a=>{span(a,chat).fill(0);};}
 const metadata=JSON.parse(fs.readFileSync(option('--imports',path.join(root,'build/web/imports.json'))));
 const coreBytes=fs.readFileSync(modulePath),threaded=definesSharedMemory(coreBytes);
 // As www/worker.js: the threaded core skips the waits that only order queued graphics work
