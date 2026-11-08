@@ -309,7 +309,8 @@ Opt-in VU1 diagnostics: `DHD_VU_CAPTURE_FAILURE`, `DHD_VU_CAPTURE_ENTRY`, `DHD_V
 
 ### Open
 - Browser speed: about 25-30 fields/s on the title, 17-25 in a race before finding 087's work;
-  the game's worker is CPU-bound.
+  about 40-45 on the title and 55-60 in a race now (finding 145), where the VU worker's VU1
+  interpreter (`run_micro`) is the limit; VIF1/VU1 and the GS already have a worker each (090 SP4).
 - Finding 067's high-rate (120/144) AI and physics equivalence limits.
 
 ## Facts
