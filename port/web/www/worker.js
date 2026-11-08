@@ -103,7 +103,7 @@ async function start(m) {
   const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([coreModulePromise, WebAssembly.compile(graphicsBytes),
     threaded ? WebAssembly.compileStreaming(fetch('build/gqueue.wasm')) : null, threaded ? WebAssembly.compileStreaming(fetch('build/vu.wasm')) : null]);
   // m.discUrl: this site's own disc (port/web/host, ?disc=KEY; disc_remote.js), else the player's file
-  const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say) : discSource(m);
+  const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say, undefined, ctrl => post('disc-wait', { ctrl })) : discSource(m);
   if (!m.discUrl) say(`disc: ${(disc.size / 2 ** 30).toFixed(2)} GiB`);
   else discPause = p => disc.pause(p);
   const keys = new Uint8Array(m.input, 0, 256), pads = new Int32Array(m.input, 256, 32);  // main.js: players 1-4

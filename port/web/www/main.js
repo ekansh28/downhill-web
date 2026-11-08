@@ -203,6 +203,7 @@ async function start(source) {
     else if (m.type === 'room') invite(m.code, m.inRoom);
     else if (m.type === 'mic') microphone(m.on, m.device).then(state => worker.postMessage({ type: 'mic-state', state }));
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
+    else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
     else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
       if (m.disc) discProgress(m.disc);
@@ -239,6 +240,19 @@ function discProgress(d) {
 }
 $('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });
   $('discPause').textContent = discPaused ? 'Resume disc download' : 'Pause disc download'; };
+// The game waiting on the network for the streamed disc (disc_store.js sets ctrl[3] while it fetches a
+// block the game is held for): after a moment, a note over the picture, so a slow line never looks
+// like a frozen game.
+function watchDiscWait(ctrl) {
+  let since = 0;
+  const tick = () => {
+    const waiting = Atomics.load(ctrl, 3) === 1 && Atomics.load(ctrl, 0) === 1;
+    since = waiting ? since || performance.now() : 0;
+    $('discWait').hidden = !(since && performance.now() - since > 700);
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
 let micChanged = () => {};
 let micQueue = Promise.resolve(), micWanted = 0;
 function microphone(on, device = '') {
