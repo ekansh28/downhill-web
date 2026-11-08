@@ -20,6 +20,7 @@ let base, tag, size, BLOCK, count, ctrl, data;
 let copy = null, map = null, have = null, stored = 0, full = false;
 let riding = false, paused = false, lastMiss = 0, fillAt = 0, failures = 0, fillAbort = null;
 const ahead = [], inflight = new Map(), spare = new Map();
+const bootOrder = [], bootSeen = new Set(), BOOT_MAX = 600;  // the game's first blocks, in order (deploy.mjs ships them)
 const stats = { net: 0, netMs: 0, worst: 0, local: 0 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const lengthOf = i => Math.min(BLOCK, size - i * BLOCK);
@@ -100,6 +101,7 @@ async function serve() {
     const state = Atomics.load(ctrl, 0);
     if (state !== 1) { const w = Atomics.waitAsync(ctrl, 0, state); if (w.async) await w.value; continue; }
     const i = ctrl[1], local = have?.[i] === 1 || spare.has(i);
+    if (bootOrder.length < BOOT_MAX && !bootSeen.has(i)) { bootSeen.add(i); bootOrder.push(i); }
     if (!local && !inflight.has(i)) fillAbort?.abort();
     // The game can't go on without this block, so its read never fails: it is asked again until it
     // comes (the page shows that the game is waiting on the network, from ctrl[3]). Only a gone link
@@ -156,7 +158,8 @@ async function background(lane) {
 
 function progress() {
   postMessage({ type: 'progress', stored, count, block: BLOCK, kept: !!copy, filling: !!copy && !full && stored < count && !paused && !riding,
-    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local });
+    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local, boot: bootOrder.length });
+  if (bootOrder.length) postMessage({ type: 'boot', order: bootOrder.slice() });
 }
 
 onmessage = async e => {

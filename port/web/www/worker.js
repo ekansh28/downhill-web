@@ -407,7 +407,7 @@ async function start(m) {
       if (now - lastReport >= 1000) {
         post('status', { field, fps: (field - lastField) * 1000 / (now - lastReport), shown, size: size ? `${size >>> 16}x${size & 0xffff}` : '-',
           draws: stats(0), dispatches: stats(1), reads: stats(2), riding, sound: +(soundFrames / 48000).toFixed(1),
-          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null });
+          renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null, discBoot: disc.bootOrder?.() || null });
         disc.riding?.(riding);  // a streamed disc's background download waits while riding (disc_store.js)
         lastReport = now; lastField = field;
       }

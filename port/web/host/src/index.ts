@@ -26,6 +26,8 @@ interface HostEnv extends Env {
   /** The disc kept in the site's own files instead of R2 (deploy.mjs, disc.source "assets"), JSON:
    *  {tag, size, chunk}: /disc-data/<tag>/<i>.bin holds bytes i*chunk .. (i+1)*chunk-1. */
   DISC_ASSETS?: string;
+  /** The blocks the game reads first, in order (deploy.mjs, from disc-boot.json): the page fetches them before Start. */
+  DISC_BOOT?: string;
 }
 
 const BLOCK = 256 << 10;  // small: on a slow line a 1 MiB miss stalls the game for seconds
@@ -84,6 +86,17 @@ const blockHeaders = {
   "Cache-Control": "private, max-age=31536000, immutable",
 };
 
+/** DISC_BOOT's blocks: "a-b,c,..." ranges (a variable stays small). */
+function bootList(env: HostEnv): number[] {
+  const out: number[] = [];
+  for (const part of (env.DISC_BOOT || "").split(",")) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) continue;
+    for (let i = Number(m[1]); i <= Number(m[2] ?? m[1]) && out.length < 2000; i++) out.push(i);
+  }
+  return out;
+}
+
 function checkFor(env: HostEnv, size: number): unknown {
   try {
     const check = env.DISC_CHECK ? JSON.parse(env.DISC_CHECK) : null;
@@ -105,7 +118,7 @@ async function discFromAssets(request: Request, env: HostEnv, rest: string[]): P
     return discJson({ error: "no disc on this site" }, 404);
   }
   if (rest.length === 1 && rest[0] === "info")
-    return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size) });
+    return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size), boot: bootList(env) });
   if (rest.length !== 2 || rest[0] !== a.tag || !/^\d{1,7}$/.test(rest[1]))
     return discJson({ error: rest[0] === a.tag ? "not found" : "the disc changed: reload the page" }, rest[0] === a.tag ? 404 : 409);
   const first = Number(rest[1]);

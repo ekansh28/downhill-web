@@ -92,6 +92,15 @@ fs.writeFileSync(path.join(pub, '_headers'), [
 // 2. the online disc check of the image the site streams, kept while the image is unchanged
 const vars = { MIN_VERSION: site.minVersion || '0.7.6', LEADERBOARD_SUBMIT_MAX: '30' };
 const r2 = [];
+// The boot list (www/disc_store.js records it; record_boot.mjs saves it): the page fetches these blocks before Start.
+const bootFile = path.join(out, 'disc-boot.json');
+if (fs.existsSync(bootFile)) {
+  const order = JSON.parse(fs.readFileSync(bootFile, 'utf8')), parts = [];
+  for (let k = 0; k < order.length;) { let j = k; while (j + 1 < order.length && order[j + 1] === order[j] + 1) j++;
+    parts.push(j > k ? `${order[k]}-${order[j]}` : `${order[k]}`); k = j + 1; }
+  vars.DISC_BOOT = parts.join(',');
+  console.log(`deploy: boot list of ${order.length} blocks (${vars.DISC_BOOT.length} characters)`);
+}
 if (site.disc) {
   const d = site.disc, fromAssets = d.source === 'assets';
   if (!fromAssets) {

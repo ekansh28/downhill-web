@@ -18,7 +18,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}, waiting
 
   const shared = new SharedArrayBuffer(16 + BLOCK), ctrl = new Int32Array(shared, 0, 4), data = new Uint8Array(shared, 16, BLOCK);
   const store = new Worker('disc_store.js');
-  let last = null;
+  let last = null, bootOrder = [];
   const ready = new Promise((done, fail) => {
     store.onerror = e => fail(Error(`the disc store: ${e.message}`));
     store.onmessage = e => { const m = e.data;
@@ -27,6 +27,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}, waiting
           : `disc: not kept in this browser (${m.note}); it streams as the game reads it`);
         done();
       } else if (m.type === 'log') say(m.text);
+      else if (m.type === 'boot') bootOrder = m.order;
       else if (m.type === 'progress') {
         if (last && m.stored === m.count && last.stored < m.count) say('disc: the whole disc is in this browser now');
         last = m; onProgress(m);
@@ -60,6 +61,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}, waiting
   return {
     size, check,
     progress: () => last,
+    bootOrder: () => bootOrder,  // the game's first blocks this session (checks: recorded for deploy.mjs)
     riding(r) { if (r !== wasRiding) { wasRiding = r; store.postMessage({ type: 'riding', riding: r }); } },
     pause(p) { store.postMessage({ type: 'pause', paused: p }); },
     read(pos, out) {
