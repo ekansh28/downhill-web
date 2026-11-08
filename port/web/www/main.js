@@ -10,6 +10,20 @@ const params = new URLSearchParams(location.search);
 const addLog = text => { log.append(text + '\n'); while (log.childNodes.length > 400) log.firstChild.remove();
   if (!log.hidden) log.scrollTop = log.scrollHeight; };
 
+// What the game needs from the browser, said on the start card before anything starts: JSPI (the
+// game's threads, WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's
+// engine, which has no JSPI yet.
+const unsupported = typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
+if (unsupported) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  document.querySelector('.note').textContent = ios
+    ? 'iPhone and iPad cannot run the game yet: their browsers (all of them use the Safari engine) lack a feature it needs (JSPI). Play on a PC, or an Android phone with Chrome.'
+    : unsupported === 'jspi'
+      ? 'This browser lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome).'
+      : 'This browser has no WebGPU. Use Chrome or Edge 137 or later, with graphics acceleration on.';
+  document.querySelector('.note').style.color = 'var(--gold)';
+  for (const id of ['start', 'hosted', 'iso']) $(id).disabled = true;
+}
 if (!crossOriginIsolated)  // on the start card too: the status line is in the menu
   status.textContent = document.querySelector('.note').textContent = 'This page needs cross-origin isolation: start it with port/web/serve.mjs.';
 const input = new SharedArrayBuffer(256 + 32 * 4 + 16 * 4 + 4 * (2 + 64));
