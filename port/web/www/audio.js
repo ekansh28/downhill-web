@@ -123,8 +123,8 @@ class Ring extends AudioWorkletProcessor {
 registerProcessor('dhd-ring', Ring);
 
 // Voice chat's microphone (main.js, finding 131): its first channel, 48 kHz (the context's rate),
-// into the worker's ring as 16-bit samples: header [write, read] in samples, then the samples. A
-// full ring drops what doesn't fit (the worker reads every 10 ms).
+// into the net worker's ring as 16-bit samples: header [write, read] in samples, then the samples. A
+// full ring drops what doesn't fit (the net worker reads every 10 ms).
 class Mic extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -146,3 +146,35 @@ class Mic extends AudioWorkletProcessor {
   }
 }
 registerProcessor('dhd-mic', Mic);
+
+// Voice chat's others (finding 144): the net worker (net_worker.js) mixes their voices, placed and
+// panned as the game asks, into this ring 50 ms ahead of what is played: header [write, read, runs
+// dry, -] as running frame counts, then 48 kHz stereo 16-bit samples (net_ring.js). Played as it
+// comes, in real time, beside the game's sound and never through the game worker; after a run dry
+// (the net worker late) it waits for START_MS before playing again, one gap rather than a crackle.
+const START_MS = 20;
+class Voice extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    const sab = options.processorOptions.ring;
+    this.head = new Int32Array(sab, 0, 4); this.data = new Int16Array(sab, 16); this.frames = this.data.length / 2;
+    this.running = false;
+  }
+  process(_inputs, outputs) {
+    const [left, right] = outputs[0], h = this.head, need = left.length;
+    const w = Atomics.load(h, 0), r = Atomics.load(h, 1), have = (w - r) | 0;
+    if (!this.running && have >= START_MS * PER_MS) this.running = true;
+    let made = 0;
+    if (this.running) {
+      for (; made < need && made < have; made++) {
+        const at = (((r + made) >>> 0) % this.frames) * 2;
+        left[made] = this.data[at] / 32768; right[made] = this.data[at + 1] / 32768;
+      }
+      Atomics.store(h, 1, (r + made) | 0);
+      if (made < need) { this.running = false; Atomics.add(h, 2, 1); }
+    }
+    for (let i = made; i < need; i++) left[i] = right[i] = 0;
+    return true;
+  }
+}
+registerProcessor('dhd-voice', Voice);

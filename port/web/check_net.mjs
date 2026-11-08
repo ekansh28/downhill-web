@@ -6,12 +6,27 @@
 // both must get. In the race the host's microphone (the page's ring, here a 440 Hz tone, open mic)
 // must be heard in the guest's mix, and the guest must see the host's slot talking (voice chat,
 // finding 131: EVENT_VOICE frames, which any server relays).
+//
+// The sockets and voice chat are the net worker's (www/net_worker.js, finding 144), here in Node's
+// worker_threads; a third thread plays the page's worklets in real time (the host's microphone, the
+// guest's dhd-voice ring). This thread is the game worker: it stalls (a busy loop, as a long field)
+// in the room and in the race, and the server's pings must still be answered, a stalled race kept
+// heard, the guest's voice played without a gap, and the round trip measured after it still the
+// real one.
 //   node port/web/check_net.mjs [ws://127.0.0.1:8787]
 import { readFileSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import { createNet } from './www/net.js';
+import { voiceRingBuffer } from './www/net_ring.js';
 
 const server = process.argv[2] || 'ws://127.0.0.1:8787';
 const wasm = readFileSync(new URL('../../build/web/dhd_net.wasm', import.meta.url));
+const voiceBytes = readFileSync(new URL('../../build/web/dhd_voice.wasm', import.meta.url));
+const startWorker = () => { const w = new Worker(new URL('./www/net_worker.js', import.meta.url));
+  w.on('error', e => fail(`net worker: ${e.stack || e}`));
+  return { postMessage: m => w.postMessage(m), set onmessage(f) { w.on('message', data => f({ data })); } }; };
+// a busy loop: the game worker in a long field
+const stall = ms => { const end = performance.now() + ms; while (performance.now() < end); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const fail = text => { console.log('FAIL ' + text); process.exit(1); };
 
@@ -20,11 +35,11 @@ async function player(name, host = {}) {
   const ram = new Uint8Array(1 << 16); let top = 16;
   const guest = { bytes: (a, n) => ram.subarray(a, a + n), strlen: a => ram.indexOf(0, a) - a };
   const put = s => { const b = new TextEncoder().encode(s + '\0'), a = top; ram.set(b, a); top += b.length + 7 & ~7; return a; };
-  const net = await createNet(wasm, guest, t => console.log(`  ${name}: ${t}`), host);
+  const net = await createNet(wasm, guest, t => console.log(`  ${name}: ${t}`), { voiceBytes, startWorker, ...host });
   const lobbyAt = 0x4000, dv = new DataView(ram.buffer);
   const lobby = () => { net.host_service_net_get_lobby(lobbyAt); const at = lobbyAt;
     return { state: dv.getInt32(at, true), code: new TextDecoder().decode(ram.subarray(at + 8, ram.indexOf(0, at + 8))),
-             isHost: dv.getInt32(at + 24, true), members: dv.getInt32(at + 160, true) }; };
+             isHost: dv.getInt32(at + 24, true), members: dv.getInt32(at + 160, true), ping: dv.getInt32(at + 1928, true) }; };
   net.host_service_net_init(put(server), put(name), put('dhd-port test-browser 0000000000000000'), put('c'.repeat(64)));
   return { net, put, ram, lobby };
 }
@@ -33,16 +48,36 @@ async function until(what, test, ms = 8000) {
   fail('timed out: ' + what);
 }
 
-// The host's microphone ring (main.js's layout: [write, read] then 48 kHz mono samples), fed a tone
-// at the microphone's pace once the race is on.
-const mic = new SharedArrayBuffer(8 + 48000 * 2), micHead = new Int32Array(mic, 0, 2), micData = new Int16Array(mic, 8);
-let micWanted = false, phase = 0;
-const host = await player('HostB', { env: { DHD_VOICE_MODE: 'open' }, mic, wantMic: on => { micWanted = on; } });
-const guest = await player('GuestB', { env: {} });
-const tone = setInterval(() => { if (!micWanted) return;
-  let w = Atomics.load(micHead, 0); const cap = micData.length;
-  for (let i = 0; i < 960; i++, phase += 2 * Math.PI * 440 / 48000) { micData[w] = Math.round(8000 * Math.sin(phase)); w = (w + 1) % cap; }
-  Atomics.store(micHead, 0, w); }, 20);
+// The page's audio, on a thread of its own as the worklets are: the host's microphone ring
+// (main.js's layout: [write, read] then 48 kHz mono samples) fed a 440 Hz tone at the microphone's
+// pace while the game wants it (on[0]), and the guest's voice ring (net_ring.js) played at 48 kHz
+// as audio.js's dhd-voice does, each 10 ms's loudness logged: log[0] the count, then [time (the
+// performance.timeOrigin + now ms), RMS, frames missing] each.
+const mic = new SharedArrayBuffer(8 + 48000 * 2), voice = voiceRingBuffer();
+const on = new Int32Array(new SharedArrayBuffer(4)), log = new Float64Array(new SharedArrayBuffer(8 * (1 + 3 * 6000)));
+new Worker(`
+  const { workerData: { mic, voice, on, log } } = require('node:worker_threads');
+  const micHead = new Int32Array(mic, 0, 2), micData = new Int16Array(mic, 8), head = new Int32Array(voice, 0, 4), data = new Int16Array(voice, 16);
+  const frames = data.length / 2, t0 = performance.now();
+  let phase = 0, sent = 0, played = 0;
+  setInterval(() => {
+    const due = Math.floor((performance.now() - t0) * 48);
+    if (Atomics.load(on, 0)) { let w = Atomics.load(micHead, 0);
+      for (; sent < due; sent++, phase += 2 * Math.PI * 440 / 48000) { micData[w] = Math.round(8000 * Math.sin(phase)); w = (w + 1) % micData.length; }
+      Atomics.store(micHead, 0, w); } else sent = due;
+    for (; played + 480 <= due; played += 480) {
+      const w = Atomics.load(head, 0), r = Atomics.load(head, 1), have = Math.min(480, (w - r) | 0);
+      let sum = 0;
+      for (let i = 0; i < have; i++) { const at = (((r + i) >>> 0) % frames) * 2; sum += data[at] * data[at] + data[at + 1] * data[at + 1]; }
+      Atomics.store(head, 1, (r + have) | 0);
+      const n = log[0]; if (n < 6000) { log.set([performance.timeOrigin + performance.now(), Math.sqrt(sum / 960), 480 - have], 1 + 3 * n); log[0] = n + 1; }
+    }
+  }, 5);`, { eval: true, workerData: { mic, voice, on, log } }).unref();
+const heardSince = from => { const out = []; for (let i = 0; i < log[0]; i++) if (log[1 + 3 * i] >= from) out.push({ t: log[1 + 3 * i], rms: log[2 + 3 * i], missing: log[3 + 3 * i] }); return out; };
+const wall = () => performance.timeOrigin + performance.now();
+let host = null;
+host = await player('HostB', { env: { DHD_VOICE_MODE: 'open' }, mic, wantMic: want => { Atomics.store(on, 0, want ? 1 : 0); host?.net.voiceMic(want ? 1 : 0); } });
+const guest = await player('GuestB', { env: {}, voice });
 if (host.net.host_service_net_create_room() !== 0) fail('create_room');
 const room = await until('the host in a room', () => { const l = host.lobby(); return l.state === 2 && l.code ? l : null; });
 console.log(`host in room ${room.code} (host ${room.isHost})`);
@@ -66,6 +101,12 @@ if (guest.net.host_service_net_send_chat(guest.put('  READY?  ')) !== 1) {
   if (lines[0].name !== 'GuestB' || lines[0].text !== 'READY?') fail(`${label} chat ${JSON.stringify(lines)}`);
   console.log(`${label} chat: ${lines[0].name}: ${lines[0].text}`);
 }
+// The game worker stalls in the room past the server's ping (every 2 s): the net worker answers it.
+{ const before = host.net.stats().pongs + guest.net.stats().pongs;
+  stall(2600);
+  const after = host.net.stats().pongs + guest.net.stats().pongs;
+  if (after <= before) fail(`no ping answered during a 2.6 s stall in the room (${before} -> ${after})`);
+  console.log(`room: the game stalled 2.6 s; the net worker answered ${after - before} ping(s) meanwhile`); }
 host.net.host_service_net_pick(-1, 1, 0); guest.net.host_service_net_pick(-1, 3, 0);
 host.net.host_service_net_set_ready(1); guest.net.host_service_net_set_ready(1);
 await sleep(500);
@@ -84,15 +125,35 @@ for (const [p, label] of [[host, 'host'], [guest, 'guest']]) {
 // full level in the middle.
 for (let slot = 0; slot < 10; slot++) guest.net.host_service_voice_place(slot, 1000, 0);
 const VOICE_STATE_TALKING = 4, VOICE_STATE_TRANSMITTING = 1;
-await until('the host transmitting', () => micWanted && host.net.host_service_voice_state(VOICE_STATE_TRANSMITTING, 0));
-const heard = await until("the host heard in the guest's mix", () => {
-  const pcm = new Int16Array(960 * 2); guest.net.voiceMix(pcm);
-  let sum = 0; for (const v of pcm) sum += v * v; const rms = Math.sqrt(sum / pcm.length);
-  return rms > 500 ? { rms, talking: [...Array(10).keys()].filter(s => guest.net.host_service_voice_state(VOICE_STATE_TALKING, s)) } : null;
+await until('the host transmitting', () => Atomics.load(on, 0) && host.net.host_service_voice_state(VOICE_STATE_TRANSMITTING, 0));
+const heard = await until("the host heard in the guest's voice ring", () => {
+  const last = heardSince(wall() - 100);
+  return last.length && last.every(c => c.rms > 500) ? { rms: last.at(-1).rms,
+    talking: [...Array(10).keys()].filter(s => guest.net.host_service_voice_state(VOICE_STATE_TALKING, s)) } : null;
 });
 if (!heard.talking.length) fail('no slot shows as talking on the guest');
 console.log(`guest hears the host: RMS ${heard.rms.toFixed(0)}, talking slot(s) ${heard.talking}`);
-clearInterval(tone);
+// The game worker stalls 500 ms mid-race (both games here: one thread): the guest's voice plays
+// on, every 10 ms of it, and nothing is missing.
+await sleep(300);
+{ const from = wall(); stall(500); const to = wall();
+  const during = heardSince(from).filter(c => c.t <= to);
+  const quiet = during.filter(c => c.rms <= 500 || c.missing);
+  if (during.length < 40 || quiet.length) fail(`voice during a 500 ms stall: ${during.length} chunks, ${quiet.length} quiet or short`);
+  console.log(`race: the game stalled 500 ms; the guest's voice played on: ${during.length} chunks of 10 ms, none quiet, none short`); }
+// A longer stall (1.5 s), the microphone quiet (its frames alone keep a race heard): the net
+// worker keeps the race heard by the server, and the round trip measured after it is the real one
+// (each pong stamped when it came, not when the game read it).
+Atomics.store(on, 0, 0);
+await sleep(500);
+{ const before = host.net.stats().keepalives;
+  stall(1500);
+  const sent = host.net.stats().keepalives - before;
+  if (sent < 1) fail('no keepalive during a 1.5 s stall in the race');
+  await sleep(1200);
+  const ping = host.lobby().ping;
+  if (!(ping >= 0 && ping < 100)) fail(`round trip after the stall: ${ping} ms`);
+  console.log(`race: the game stalled 1.5 s; the net worker sent ${sent} keepalive ping(s); round trip after it ${ping} ms`); }
 if (!host.net.host_service_net_list_lobbies_start(16)) fail('list start');
 const listed = await until('the public list', () => { const n = host.net.host_service_net_list_lobbies_poll(0xC000, 16); return n === -2 ? 0 : { n }; });
 if (listed.n < 0) fail('list poll ' + listed.n);
