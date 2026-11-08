@@ -39,6 +39,9 @@
   #hosted[hidden], #hostedNote[hidden] { display: none; }
   .disc-state { font-size: .8rem; color: var(--gold); }
   .import { cursor: pointer; text-decoration: underline; }
+  .invite-float { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 7; padding: 9px 14px; border: 1px solid var(--gold); border-radius: 8px;
+    background: var(--panel); color: var(--gold); font: 700 .85rem var(--font); }
+  .invite-float[hidden], body:not(.running) .invite-float { display: none; }
   .disc-wait { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 6; padding: 8px 14px; border-radius: 8px;
     background: var(--panel); color: var(--gold); font: 600 .85rem var(--font); pointer-events: none; }
   .disc-wait[hidden] { display: none; }
@@ -116,6 +119,8 @@
   </div>
 </div>
 
+<!-- in a room: a link that joins it (main.js invite; the room's code from net.js) -->
+<button class="invite-float" id="inviteFloat" type="button" hidden>Invite friends</button>
 <div class="disc-wait" id="discWait" hidden>Loading game data from the network&hellip;</div>
 <div class="hint" id="hint">Press <kbd>`</kbd> for the menu &middot; double-click for fullscreen</div>
 

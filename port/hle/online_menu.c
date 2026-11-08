@@ -2127,7 +2127,11 @@ int port_online_shell(void)
     }
     if (room_pending && (menu == 15 || menu == 0)) room_pending = 0;  /* backed out meanwhile */
     if (room_pending) {
-        /* The rider screen's own frames put the camera on it; the room's page freezes it. */
+        /* The rider screen's own frames put the camera on it; the room's page freezes it. While
+           it waits for the room, a button held skips the rider screen's frame: else a player
+           pressing Cross to hurry picks the rider again, which flies back through the selection
+           and starts the wait over (pressing X over and over looped the rider screen). */
+        if (menu == 3 && pads_held() > 0) { hold_rider = 1; return 1; }
         if (menu != 3 || ++room_pending < 45) return 0;
         room_pending = 0;
     } else if (menu == 9 || menu == 15 || menu == 0) {

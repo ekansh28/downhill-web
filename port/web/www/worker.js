@@ -146,7 +146,7 @@ async function start(m) {
   const net = await createNet(netBytes, { bytes: (a, n) => span(a, n), strlen: a => { if (bytes.buffer !== memory.buffer) refresh();
     const at = fold(a); return bytes.indexOf(0, at) - at; } }, say,
     { env, keyHeld: k => k > 0 && k < 256 && !textActive && Atomics.load(keys, k) !== 0, mic: m.mic || null,
-      wantMic: (on, device) => post('mic', { on, device }) });
+      wantMic: (on, device) => post('mic', { on, device }), room: code => post('room', { code, inRoom: !!code }) });
   micNames = m.micNames || [];
   micAnswer = state => net.voiceMic(state);
   let core, graphics, queue, memory, bytes, dv, arena = 0x07000000, current = 65, csr = 0x1f80, field = 0;

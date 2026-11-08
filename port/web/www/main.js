@@ -354,13 +354,15 @@ const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
 let inviteCode = '';
 function invite(code, inRoom = true) {
   if (code) inviteCode = code; else if (!inRoom) inviteCode = '';
-  $('invite').hidden = !inviteCode;
+  $('invite').hidden = $('inviteFloat').hidden = !inviteCode;
 }
+$('inviteFloat').onclick = () => $('invite').onclick();
 $('invite').onclick = () => {
   const link = `${location.origin}${location.pathname}?room=${inviteCode}`;
   navigator.clipboard?.writeText(link).then(() => { $('invite').textContent = 'Invite link copied'; },
     e => addLog(`clipboard: ${e.message}`));
-  setTimeout(() => { $('invite').textContent = 'Copy invite link'; }, 1500);
+  $('inviteFloat').textContent = 'Link copied';
+  setTimeout(() => { $('invite').textContent = 'Copy invite link'; $('inviteFloat').textContent = 'Invite friends'; }, 1500);
 };
 // Test hook: serve.mjs --iso <path> serves that file as /test-iso to localhost only, and
 // ?iso=test starts with it at once (headless checks; the ISO never leaves the machine).
