@@ -15,11 +15,12 @@
 //
 // ctrl (Int32Array over the shared buffer): [0] state: 0 idle, 1 asked, 2 answered, 3 failed;
 // [1] the block asked for; [2] the answer's length. data: the block's bytes.
-const AHEAD = 16, AFTER_MISS_MS = 1500, NO_COPY_KEEP = 64, FILL_RUN = 8;
+const AHEAD = 16, AFTER_MISS_MS = 1500, NO_COPY_KEEP = 64, FILL_RUN = 8, REQUEST_MS = 12000;
 let base, tag, size, BLOCK, count, ctrl, data;
 let copy = null, map = null, have = null, stored = 0, full = false;
 let riding = false, paused = false, lastMiss = 0, fillAt = 0, failures = 0, fillAbort = null;
 const ahead = [], inflight = new Map(), spare = new Map();
+const bootOrder = [], bootSeen = new Set(), BOOT_MAX = 600;  // the game's first blocks, in order (deploy.mjs ships them)
 const stats = { net: 0, netMs: 0, worst: 0, local: 0 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const lengthOf = i => Math.min(BLOCK, size - i * BLOCK);
@@ -30,7 +31,10 @@ async function download(first, n, signal) {
   let last = '';
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const t = performance.now(), r = await fetch(`${base}/${tag}/${first}${n > 1 ? `?n=${n}` : ''}`, { signal });
+      // A time limit on every request (the body too): a connection that stalls fails and is asked
+      // again, rather than hold the game, which waits for its block, for ever.
+      const limit = AbortSignal.timeout(REQUEST_MS + n * 4000), both = signal ? AbortSignal.any([signal, limit]) : limit;
+      const t = performance.now(), r = await fetch(`${base}/${tag}/${first}${n > 1 ? `?n=${n}` : ''}`, { signal: both });
       if (r.ok) {
         const all = new Uint8Array(await r.arrayBuffer()), out = [];
         for (let k = 0, at = 0; k < n; k++) { const len = lengthOf(first + k); out.push(all.subarray(at, at + len)); at += len; }
@@ -86,7 +90,9 @@ function load(i) {
   }
   const s = spare.get(i);
   if (s) return Promise.resolve(s);
-  return inflight.get(i) || fetchRun(i, 1).then(blocks => blocks[0]);
+  const shared = inflight.get(i);
+  const alone = () => fetchRun(i, 1).then(blocks => blocks[0]);
+  return shared ? shared.catch(alone) : alone();
 }
 
 // the game's reads: they go first, so a fill download in the way is dropped (it comes back later)
@@ -95,13 +101,25 @@ async function serve() {
     const state = Atomics.load(ctrl, 0);
     if (state !== 1) { const w = Atomics.waitAsync(ctrl, 0, state); if (w.async) await w.value; continue; }
     const i = ctrl[1], local = have?.[i] === 1 || spare.has(i);
+    if (bootOrder.length < BOOT_MAX && !bootSeen.has(i)) { bootSeen.add(i); bootOrder.push(i); }
     if (!local && !inflight.has(i)) fillAbort?.abort();
-    try {
-      const b = await load(i);
-      data.set(b); ctrl[2] = b.length; Atomics.store(ctrl, 0, 2);
-    } catch (e) {
-      postMessage({ type: 'log', text: String(e.message || e) }); Atomics.store(ctrl, 0, 3);
+    // The game can't go on without this block, so its read never fails: it is asked again until it
+    // comes (the page shows that the game is waiting on the network, from ctrl[3]). Only a gone link
+    // or a new upload (404, 409) ends it, as nothing will answer those.
+    Atomics.store(ctrl, 3, 1);
+    for (let tries = 0; ; tries++) {
+      try {
+        const b = await load(i);
+        data.set(b); ctrl[2] = b.length; Atomics.store(ctrl, 0, 2);
+        break;
+      } catch (e) {
+        const text = String(e.message || e);
+        if (tries % 5 === 0) postMessage({ type: 'log', text: `${text}; trying again` });
+        if (/HTTP 40[49]/.test(text)) { Atomics.store(ctrl, 0, 3); break; }
+        await sleep(Math.min(5000, 500 * (tries + 1)));
+      }
     }
+    Atomics.store(ctrl, 3, 0);
     Atomics.notify(ctrl, 0);
     if (!local) {
       lastMiss = performance.now();
@@ -140,7 +158,8 @@ async function background(lane) {
 
 function progress() {
   postMessage({ type: 'progress', stored, count, block: BLOCK, kept: !!copy, filling: !!copy && !full && stored < count && !paused && !riding,
-    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local });
+    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local, boot: bootOrder.length });
+  if (bootOrder.length) postMessage({ type: 'boot', order: bootOrder.slice() });
 }
 
 onmessage = async e => {

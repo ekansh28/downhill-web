@@ -10,6 +10,9 @@
 //     "name": "dhd-web",                       // the Worker's name
 //     "minVersion": "0.7.6",                   // the oldest game build its online server takes
 //     "disc": {                                // optional: no "disc", no disc route
+//       "source": "assets",                    // "assets": the disc in the site's own files (uploaded
+//                                              // with the deploy, ~600 files of 4 MiB, kept at
+//                                              // Cloudflare's edge); "r2" (default): from the buckets
 //       "object": "Downhill Domination.iso",   // the object's name in each bucket
 //       "buckets": { "asia": "dhd-asia", "eu": "dhd-eu", "us": "dhd-us" },  // region -> R2 bucket
 //       "iso": "<your local copy of the same image>"   // for the online disc check (disc_check.mjs)
@@ -71,7 +74,8 @@ const www = path.join(root, 'port/web/www'), web = path.join(root, 'build/web');
 const modules = ['dhd_core.wasm', 'graphics.wasm', 'gqueue.wasm', 'vu.wasm', 'dhd_settings.wasm', 'dhd_net.wasm', 'dhd_disc.wasm',
   'imports.json', 'renderer/dhd_render.js', 'renderer/dhd_render_bg.wasm'];
 for (const m of modules) if (!fs.existsSync(path.join(web, m))) die(`build/web/${m} is missing: run python port/web/build.py`);
-fs.rmSync(pub, { recursive: true, force: true });
+// everything but the disc's files, which are written once and kept between deploys
+for (const f of fs.existsSync(pub) ? fs.readdirSync(pub) : []) if (f !== 'disc-data') fs.rmSync(path.join(pub, f), { recursive: true, force: true });
 fs.mkdirSync(path.join(pub, 'build/renderer'), { recursive: true });
 for (const f of fs.readdirSync(www)) if (/^[\w.-]+$/.test(f) && fs.statSync(path.join(www, f)).isFile()) fs.copyFileSync(path.join(www, f), path.join(pub, f));
 for (const m of modules) {
@@ -88,15 +92,27 @@ fs.writeFileSync(path.join(pub, '_headers'), [
 // 2. the online disc check of the image the site streams, kept while the image is unchanged
 const vars = { MIN_VERSION: site.minVersion || '0.7.6', LEADERBOARD_SUBMIT_MAX: '30' };
 const r2 = [];
+// The boot list (www/disc_store.js records it; record_boot.mjs saves it): the page fetches these blocks before Start.
+const bootFile = path.join(out, 'disc-boot.json');
+if (fs.existsSync(bootFile)) {
+  const order = JSON.parse(fs.readFileSync(bootFile, 'utf8')), parts = [];
+  for (let k = 0; k < order.length;) { let j = k; while (j + 1 < order.length && order[j + 1] === order[j] + 1) j++;
+    parts.push(j > k ? `${order[k]}-${order[j]}` : `${order[k]}`); k = j + 1; }
+  vars.DISC_BOOT = parts.join(',');
+  console.log(`deploy: boot list of ${order.length} blocks (${vars.DISC_BOOT.length} characters)`);
+}
 if (site.disc) {
-  const d = site.disc, buckets = d.buckets || die('site.local.json: disc.buckets');
-  const bindings = {};
-  for (const [region, bucket] of Object.entries(buckets)) {
-    const binding = `DISC_${region.toUpperCase().replace(/\W/g, '_')}`;
-    bindings[region] = binding; r2.push({ binding, bucket_name: bucket });
-  }
-  vars.DISC_OBJECT = d.object || die('site.local.json: disc.object');
-  vars.DISC_BUCKETS = JSON.stringify(bindings);
+  const d = site.disc, fromAssets = d.source === 'assets';
+  if (!fromAssets) {
+    const buckets = d.buckets || die('site.local.json: disc.buckets');
+    const bindings = {};
+    for (const [region, bucket] of Object.entries(buckets)) {
+      const binding = `DISC_${region.toUpperCase().replace(/\W/g, '_')}`;
+      bindings[region] = binding; r2.push({ binding, bucket_name: bucket });
+    }
+    vars.DISC_OBJECT = d.object || die('site.local.json: disc.object');
+    vars.DISC_BUCKETS = JSON.stringify(bindings);
+  } else if (!d.iso) die('site.local.json: disc.source "assets" needs disc.iso (the image to put in the site)');
   if (d.iso) {
     const stat = fs.statSync(d.iso), keep = path.join(out, 'disc-check.json');
     let check = null;
@@ -109,6 +125,23 @@ if (site.disc) {
     if (check.code !== 1) die(`the image's online check failed: ${check.note}`);
     console.log(`deploy: disc check ${check.digest}${check.note ? ` (${check.note})` : ''}`);
     vars.DISC_CHECK = JSON.stringify({ size: check.size, code: check.code, digest: check.digest, note: check.note });
+    if (fromAssets) {  // the image as 4 MiB files (a whole number of the Worker's 16-block runs), named by its hash
+      const CHUNK = 4 << 20, tag = check.digest.slice(0, 16), dir = path.join(pub, 'disc-data', tag);
+      for (const old of fs.existsSync(path.join(pub, 'disc-data')) ? fs.readdirSync(path.join(pub, 'disc-data')) : [])
+        if (old !== tag) fs.rmSync(path.join(pub, 'disc-data', old), { recursive: true, force: true });
+      fs.mkdirSync(dir, { recursive: true });
+      const count = Math.ceil(stat.size / CHUNK), fd = fs.openSync(d.iso, 'r'), buf = Buffer.alloc(CHUNK);
+      let written = 0;
+      try {
+        for (let i = 0; i < count; i++) {
+          const file = path.join(dir, `${i}.bin`), n = Math.min(CHUNK, stat.size - i * CHUNK);
+          if (fs.existsSync(file) && fs.statSync(file).size === n) continue;
+          fs.readSync(fd, buf, 0, n, i * CHUNK); fs.writeFileSync(file, buf.subarray(0, n)); written++;
+        }
+      } finally { fs.closeSync(fd); }
+      console.log(`deploy: the disc in the site's files: ${count} files of 4 MiB (${written} written now)`);
+      vars.DISC_ASSETS = JSON.stringify({ tag, size: stat.size, chunk: CHUNK });
+    }
   } else console.log('deploy: no disc.iso, so the streamed disc has no online check (online is refused with it)');
 }
 
@@ -118,7 +151,7 @@ const server = JSON.parse(fs.readFileSync(path.join(root, 'online/server/wrangle
 const config = {
   name, main: path.relative(out, path.join(here, 'src/index.ts')).replace(/\\/g, '/'),
   compatibility_date: server.compatibility_date, workers_dev: true, observability: { enabled: true },
-  assets: { directory: './public', binding: 'ASSETS', run_worker_first: ['/v1/*', '/disc/*', '/site.json'] },
+  assets: { directory: './public', binding: 'ASSETS', run_worker_first: ['/v1/*', '/disc/*', '/disc-data/*', '/site.json'] },
   vars, r2_buckets: r2, durable_objects: server.durable_objects, migrations: server.migrations,
 };
 fs.writeFileSync(path.join(out, 'wrangler.jsonc'), JSON.stringify(config, null, 2));

@@ -10,7 +10,7 @@
 
 const MEMORY = 96;    // blocks kept in memory here
 
-export async function createRemoteDisc(base, say, onProgress = () => {}) {
+export async function createRemoteDisc(base, say, onProgress = () => {}, waitingOn = () => {}) {
   const got = await fetch(`${base}/info`, { cache: 'no-store' });
   if (!got.ok) throw Error(`the site's disc: ${got.status} ${(await got.text()).slice(0, 200)}`);
   const { size, tag, block: BLOCK, check } = await got.json();
@@ -18,7 +18,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
 
   const shared = new SharedArrayBuffer(16 + BLOCK), ctrl = new Int32Array(shared, 0, 4), data = new Uint8Array(shared, 16, BLOCK);
   const store = new Worker('disc_store.js');
-  let last = null;
+  let last = null, bootOrder = [];
   const ready = new Promise((done, fail) => {
     store.onerror = e => fail(Error(`the disc store: ${e.message}`));
     store.onmessage = e => { const m = e.data;
@@ -27,6 +27,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
           : `disc: not kept in this browser (${m.note}); it streams as the game reads it`);
         done();
       } else if (m.type === 'log') say(m.text);
+      else if (m.type === 'boot') bootOrder = m.order;
       else if (m.type === 'progress') {
         if (last && m.stored === m.count && last.stored < m.count) say('disc: the whole disc is in this browser now');
         last = m; onProgress(m);
@@ -34,6 +35,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
     };
   });
   store.postMessage({ type: 'open', base, tag, size, block: BLOCK, shared });
+  waitingOn(ctrl);  // the page watches ctrl[3]: the game is waiting on the network
   await ready;
 
   function fetchBlock(i) {
@@ -41,7 +43,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
     while (Atomics.load(ctrl, 0) === 1) Atomics.wait(ctrl, 0, 1);
     const state = Atomics.load(ctrl, 0), b = state === 2 ? data.slice(0, ctrl[2]) : null;
     Atomics.store(ctrl, 0, 0);
-    if (!b) throw Error(`disc block ${i} could not be read (the log has why)`);
+    if (!b) throw Error(`disc block ${i}: this site's disc link no longer works (a new upload or a new key): reload the page`);
     return b;
   }
   const memory = new Map();
@@ -59,6 +61,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}) {
   return {
     size, check,
     progress: () => last,
+    bootOrder: () => bootOrder,  // the game's first blocks this session (checks: recorded for deploy.mjs)
     riding(r) { if (r !== wasRiding) { wasRiding = r; store.postMessage({ type: 'riding', riding: r }); } },
     pause(p) { store.postMessage({ type: 'pause', paused: p }); },
     read(pos, out) {

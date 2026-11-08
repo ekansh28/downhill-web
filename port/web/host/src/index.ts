@@ -23,9 +23,14 @@ interface HostEnv extends Env {
   DISC_BUCKETS?: string;
   /** disc_check.mjs's answer for the image, JSON: {size, code, digest, note}. */
   DISC_CHECK?: string;
+  /** The disc kept in the site's own files instead of R2 (deploy.mjs, disc.source "assets"), JSON:
+   *  {tag, size, chunk}: /disc-data/<tag>/<i>.bin holds bytes i*chunk .. (i+1)*chunk-1. */
+  DISC_ASSETS?: string;
+  /** The blocks the game reads first, in order (deploy.mjs, from disc-boot.json): the page fetches them before Start. */
+  DISC_BOOT?: string;
 }
 
-const BLOCK = 256 << 10;
+const BLOCK = 256 << 10;  // small: on a slow line a 1 MiB miss stalls the game for seconds
 const MAX_RUN = 16;  // the most blocks one request answers (4 MiB)
 
 /** The object's size per bucket, looked up once per Worker instance (the last block is shorter). */
@@ -37,7 +42,7 @@ async function sizeOf(bucket: R2Bucket, object: string): Promise<number | null> 
     sizes.set(bucket, head.size);
   }
   return sizes.get(bucket)!;
-}  // small: on a slow line a 1 MiB miss stalls the game for seconds
+}
 const ISOLATION = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -74,7 +79,69 @@ function sameKey(a: string, b: string): boolean {
 const discJson = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { ...ISOLATION, "Cache-Control": "no-store" } });
 
+const blockHeaders = {
+  ...ISOLATION,
+  "Content-Type": "application/octet-stream",
+  // private: the browser keeps it (a replay of the same block costs nothing), no shared cache does
+  "Cache-Control": "private, max-age=31536000, immutable",
+};
+
+/** DISC_BOOT's blocks: "a-b,c,..." ranges (a variable stays small). */
+function bootList(env: HostEnv): number[] {
+  const out: number[] = [];
+  for (const part of (env.DISC_BOOT || "").split(",")) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) continue;
+    for (let i = Number(m[1]); i <= Number(m[2] ?? m[1]) && out.length < 2000; i++) out.push(i);
+  }
+  return out;
+}
+
+function checkFor(env: HostEnv, size: number): unknown {
+  try {
+    const check = env.DISC_CHECK ? JSON.parse(env.DISC_CHECK) : null;
+    // The deploy-time answer counts only for an image of the same size (another upload: none).
+    return check && check.size === size ? check : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The disc from the site's own files: Cloudflare keeps them at its edge, near the player, with no
+ *  bucket behind each request. The chunk files are reachable only through this Worker (index.ts's
+ *  fetch answers /disc-data/ itself, so the key still guards them). */
+async function discFromAssets(request: Request, env: HostEnv, rest: string[]): Promise<Response> {
+  let a: { tag: string; size: number; chunk: number };
+  try {
+    a = JSON.parse(env.DISC_ASSETS!);
+  } catch {
+    return discJson({ error: "no disc on this site" }, 404);
+  }
+  if (rest.length === 1 && rest[0] === "info")
+    return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size), boot: bootList(env) });
+  if (rest.length !== 2 || rest[0] !== a.tag || !/^\d{1,7}$/.test(rest[1]))
+    return discJson({ error: rest[0] === a.tag ? "not found" : "the disc changed: reload the page" }, rest[0] === a.tag ? 404 : 409);
+  const first = Number(rest[1]);
+  const want = Math.max(1, Math.min(MAX_RUN, Number(new URL(request.url).searchParams.get("n")) || 1));
+  const offset = first * BLOCK, length = Math.min(want * BLOCK, a.size - offset);
+  if (length <= 0) return discJson({ error: "past the end of the disc" }, 416);
+  const out = new Uint8Array(length);
+  for (let at = offset; at < offset + length;) {  // at most two chunks (a chunk is a whole number of runs)
+    const i = Math.floor(at / a.chunk);
+    const r = await env.ASSETS.fetch(new Request(new URL(`/disc-data/${a.tag}/${i}.bin`, request.url)));
+    if (!r.ok) return discJson({ error: `the disc could not be read (${r.status})` }, 502);
+    const chunk = new Uint8Array(await r.arrayBuffer()), from = at - i * a.chunk;
+    const n = Math.min(chunk.length - from, offset + length - at);
+    if (n <= 0) return discJson({ error: "the disc's files are short" }, 502);
+    out.set(chunk.subarray(from, from + n), at - offset);
+    at += n;
+  }
+  return new Response(request.method === "HEAD" ? null : out, { headers: { ...blockHeaders, "X-Disc-Cache": "ASSETS" } });
+}
+
 async function disc(request: Request, env: HostEnv, ctx: ExecutionContext, rest: string[]): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") return discJson({ error: "GET only" }, 405);
+  if (env.DISC_ASSETS) return discFromAssets(request, env, rest);
   const object = env.DISC_OBJECT || "";
   const from = buckets(request, env);
   if (!object || !from.length) return discJson({ error: "no disc on this site" }, 404);
@@ -84,15 +151,7 @@ async function disc(request: Request, env: HostEnv, ctx: ExecutionContext, rest:
     for (const bucket of from) {
       const head = await bucket.head(object).catch(() => null);
       if (!head) continue;
-      let check: { size?: number } | null = null;
-      try {
-        check = env.DISC_CHECK ? JSON.parse(env.DISC_CHECK) : null;
-      } catch {
-        check = null;
-      }
-      // The deploy-time answer counts only for an image of the same size (another upload: none).
-      if (check && check.size !== head.size) check = null;
-      return discJson({ size: head.size, tag: tagOf(head), block: BLOCK, check });
+      return discJson({ size: head.size, tag: tagOf(head), block: BLOCK, check: checkFor(env, head.size) });
     }
     return discJson({ error: "the disc object is missing" }, 404);
   }
@@ -102,12 +161,7 @@ async function disc(request: Request, env: HostEnv, ctx: ExecutionContext, rest:
   // Block N, or ?n= blocks from N in one answer (the browser's background fill: fewer requests).
   const [tag, first] = [rest[0], Number(rest[1])];
   const want = Math.max(1, Math.min(MAX_RUN, Number(new URL(request.url).searchParams.get("n")) || 1));
-  const headers = {
-    ...ISOLATION,
-    "Content-Type": "application/octet-stream",
-    // private: the browser keeps it (a replay of the same block costs nothing), no shared cache does
-    "Cache-Control": "private, max-age=31536000, immutable",
-  };
+  const headers = blockHeaders;
   const answer = (bytes: ArrayBuffer | null, cache: string) =>
     new Response(request.method === "HEAD" ? null : bytes, { headers: { ...headers, "X-Disc-Cache": cache } });
   const edge = (caches as unknown as { default: Cache }).default;
@@ -135,6 +189,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/v1/")) return server.fetch(request, env);
     const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "disc-data") return discJson({ error: "not found" }, 404);  // only through /disc/<KEY>/
     if (parts[0] === "disc") {
       if (!env.DISC_KEY || parts.length < 2 || !sameKey(parts[1], env.DISC_KEY)) return discJson({ error: "not found" }, 404);
       return disc(request, env, ctx, parts.slice(2));

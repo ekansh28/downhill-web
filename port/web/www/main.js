@@ -10,6 +10,20 @@ const params = new URLSearchParams(location.search);
 const addLog = text => { log.append(text + '\n'); while (log.childNodes.length > 400) log.firstChild.remove();
   if (!log.hidden) log.scrollTop = log.scrollHeight; };
 
+// What the game needs from the browser, said on the start card before anything starts: JSPI (the
+// game's threads, WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's
+// engine, which has JSPI from Safari 27 (iOS and iPadOS 27).
+const unsupported = typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
+if (unsupported) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  document.querySelector('.note').textContent = ios
+    ? 'This iPhone or iPad browser lacks JSPI, which the game needs. It came with iOS and iPadOS 27 (Safari 27): update iOS, and keep Lockdown Mode off (it turns WebAssembly features off).'
+    : unsupported === 'jspi'
+      ? 'This browser lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome).'
+      : 'This browser has no WebGPU. Use Chrome or Edge 137 or later, with graphics acceleration on.';
+  document.querySelector('.note').style.color = 'var(--gold)';
+  for (const id of ['start', 'hosted', 'iso']) $(id).disabled = true;
+}
 if (!crossOriginIsolated)  // on the start card too: the status line is in the menu
   status.textContent = document.querySelector('.note').textContent = 'This page needs cross-origin isolation: start it with port/web/serve.mjs.';
 const input = new SharedArrayBuffer(256 + 32 * 4 + 16 * 4 + 4 * (2 + 64));
@@ -128,6 +142,42 @@ for (const [id, section] of [['controlsButton', $('controls')], ['logButton', lo
     if (!section.hidden && section === log) log.scrollTop = log.scrollHeight; };
 menu.addEventListener('pointerdown', e => e.stopPropagation());
 canvas.addEventListener('pointerdown', () => { if (!menu.hidden) toggleMenu(false); });
+// Saves (the memory card and dhd.ini, kept in this browser's IndexedDB, vfs.js and settings.js) to
+// a file and back: a backup, or a move to another browser. Import before Start (the game holds its
+// copy while it runs).
+const SAVE_DBS = ['downhill-revived'];
+async function idb(name) { return new Promise((ok, no) => { const r = indexedDB.open(name); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }); }
+async function exportSaves() {
+  const out = {};
+  for (const name of SAVE_DBS.concat((await indexedDB.databases?.() || []).map(d => d.name).filter(n => /settings/i.test(n)))) {
+    const db = await idb(name); out[name] = {};
+    for (const store of db.objectStoreNames) out[name][store] = await new Promise(ok => { const rows = [], r = db.transaction(store).objectStore(store).openCursor();
+      r.onsuccess = () => { const c = r.result; if (!c) return ok(rows); const v = c.value;
+        rows.push([c.key, v?.data instanceof Uint8Array ? { ...v, data: Array.from(v.data) } : v]); c.continue(); }; });
+    db.close();
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+  a.download = `downhill-revived-saves-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+}
+async function importSaves(file) {
+  const all = JSON.parse(await file.text());
+  for (const [name, stores] of Object.entries(all)) {
+    const db = await new Promise((ok, no) => { const r = indexedDB.open(name);
+      r.onupgradeneeded = () => { for (const s of Object.keys(stores)) r.result.createObjectStore(s); };
+      r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+    for (const [store, rows] of Object.entries(stores)) {
+      if (!db.objectStoreNames.contains(store)) continue;
+      const t = db.transaction(store, 'readwrite'), s = t.objectStore(store);
+      for (const [k, v] of rows) s.put(v && Array.isArray(v.data) ? { ...v, data: new Uint8Array(v.data) } : v, k);
+      await new Promise(ok => { t.oncomplete = ok; t.onerror = ok; });
+    }
+    db.close();
+  }
+}
+$('exportSaves').onclick = () => exportSaves().catch(e => addLog(`saves: not exported (${e.message})`));
+$('importSaves').onchange = () => { const f = $('importSaves').files[0]; if (!f) return;
+  importSaves(f).then(() => { $('importLabel').textContent = 'Saves imported'; }, e => { $('importLabel').textContent = `Not imported: ${e.message}`; }); };
 $('touchButton').onclick = () => { touch.set(!touch.enabled); $('touchButton').setAttribute('aria-pressed', String(touch.enabled)); };
 const openLog = () => { toggleMenu(true); log.hidden = false; $('logButton').setAttribute('aria-pressed', 'true'); };
 
@@ -169,6 +219,7 @@ async function micNames() {
 }
 async function start(source) {
   await siteReady;  // this site's server, if it is one, before the game reads its settings
+  navigator.storage?.persist?.().catch(() => {});  // keep the saves and the disc when the browser is short of space
   $('start').disabled = true; $('iso').disabled = true; $('hosted').disabled = true; running = true;
   document.body.classList.add('running'); status.textContent = 'starting';
   // A phone or tablet: the on-screen controls, the whole screen, and landscape where it can be locked
@@ -203,9 +254,11 @@ async function start(source) {
     else if (m.type === 'room') invite(m.code, m.inRoom);
     else if (m.type === 'mic') microphone(m.on, m.device).then(state => worker.postMessage({ type: 'mic-state', state }));
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
+    else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
     else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
       if (m.disc) discProgress(m.disc);
+      if (m.discBoot) window.dhdDiscBoot = m.discBoot;  // deploy checks read it (disc boot list)
       document.title = `DHD ${m.fps.toFixed(1)} fps (field ${m.field})`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }
   };
   worker.onerror = e => addLog('worker error: ' + e.message);
@@ -239,6 +292,19 @@ function discProgress(d) {
 }
 $('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });
   $('discPause').textContent = discPaused ? 'Resume disc download' : 'Pause disc download'; };
+// The game waiting on the network for the streamed disc (disc_store.js sets ctrl[3] while it fetches a
+// block the game is held for): after a moment, a note over the picture, so a slow line never looks
+// like a frozen game.
+function watchDiscWait(ctrl) {
+  let since = 0;
+  const tick = () => {
+    const waiting = Atomics.load(ctrl, 3) === 1 && Atomics.load(ctrl, 0) === 1;
+    since = waiting ? since || performance.now() : 0;
+    $('discWait').hidden = !(since && performance.now() - since > 700);
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
 let micChanged = () => {};
 let micQueue = Promise.resolve(), micWanted = 0;
 function microphone(on, device = '') {
@@ -315,6 +381,24 @@ else shape(env);
 //   disc: true: the site streams its owner's disc to whoever has its private link, ?disc=KEY. The
 //           key is kept in this browser once used, so the plain address plays it too.
 const DISC_KEY = 'dhd-disc-key';
+// Fast first start: while the player is still on the start card, the blocks the game reads first
+// (the site's boot list, recorded by deploy.mjs from a real start) are fetched by the same URLs the
+// disc store uses, so they wait in the browser's HTTP cache (immutable) and the start reads them
+// locally. Once per browser and disc version: after that they are in the disc's copy.
+async function warmDisc(base) {
+  try {
+    const info = await (await fetch(`${base}/info`, { cache: 'no-store' })).json();
+    const list = info.boot || [], done = `dhd-disc-warm-${info.tag}`;
+    if (!list.length || localStorage.getItem(done)) return;
+    let next = 0, got = 0;
+    const lane = async () => { while (next < list.length && !running) {
+      const i = list[next++];
+      try { await (await fetch(`${base}/${info.tag}/${i}`)).arrayBuffer(); got++; } catch { /* the store fetches it later */ }
+      $('hostedNote').textContent = `Getting the game ready: ${Math.round(got / list.length * 100)}% (you can start now)`; } };
+    await Promise.all(Array.from({ length: 6 }, lane));
+    if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
+  } catch { /* nothing to warm: the game streams as before */ }
+}
 siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(site => {
   if (!site) return;
   if (site.server === 'same-origin' && !('DHD_NET_SERVER' in env))
@@ -325,6 +409,7 @@ siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() 
   if (!/^[\w-]{8,128}$/.test(key)) return;
   if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
   $('hosted').hidden = $('hostedNote').hidden = false;
+  warmDisc(`/disc/${encodeURIComponent(key)}`);
   $('hosted').onclick = () => { $('hosted').disabled = true;
     navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
     start({ discUrl: `/disc/${encodeURIComponent(key)}`, env }); };
