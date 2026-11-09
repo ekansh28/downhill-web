@@ -169,6 +169,42 @@ static int keep_ready(void)
     return !v || !*v || strcmp(v, "0") != 0;
 }
 
+static void chat_add(NetClient *c, int member_id, const char *name, const char *text, double at);
+
+/* Who joined or left since the last room message, as the chat's notes (NET_CHAT_ROOM; finding
+   204). Not for the first room message of a room (everyone there was there before this player),
+   nor for this player. A member away after a drop stays listed (finding 137): no note. */
+static void note_members(NetClient *c)
+{
+    const NetLobby *l = &c->lobby;
+    double at = net_now_ms() + c->clock_offset;
+    char line[NET_CHAT_NAME + 24];
+    int i, k;
+    if (c->members_known) {
+        for (i = 0; i < l->nmembers; i++) {
+            const NetMember *m = &l->member[i];
+            for (k = 0; k < c->nmembers_seen && c->member_seen_id[k] != m->id; k++) {}
+            if (k == c->nmembers_seen && m->id != l->member_id) {
+                snprintf(line, sizeof line, "%.24s JOINED THE ROOM", m->name);
+                chat_add(c, NET_CHAT_ROOM, "", line, at);
+            }
+        }
+        for (k = 0; k < c->nmembers_seen; k++) {
+            for (i = 0; i < l->nmembers && l->member[i].id != c->member_seen_id[k]; i++) {}
+            if (i == l->nmembers && c->member_seen_id[k] != l->member_id) {
+                snprintf(line, sizeof line, "%.24s LEFT THE ROOM", c->member_seen_name[k]);
+                chat_add(c, NET_CHAT_ROOM, "", line, at);
+            }
+        }
+    }
+    c->members_known = 1;
+    c->nmembers_seen = l->nmembers;
+    for (i = 0; i < l->nmembers; i++) {
+        c->member_seen_id[i] = l->member[i].id;
+        copy(c->member_seen_name[i], sizeof c->member_seen_name[i], l->member[i].name);
+    }
+}
+
 static void read_room(NetClient *c, const char *t)
 {
     NetLobby *l = &c->lobby;
@@ -267,6 +303,7 @@ static void read_room(NetClient *c, const char *t)
 
 #undef FIELD
     }
+    note_members(c);
     for (i = 0; i < l->nmembers; i++)
         if (l->member[i].id == l->member_id && l->phase[0] && !l->member[i].in_race) {
             c->racing = 0; l->state = NET_LOBBY; l->started = 0; c->relayed_head = c->relayed_count = 0;
@@ -649,7 +686,7 @@ void client_on_text(NetClient *c, const char *text, size_t n)
         json_string(text, "code", c->lobby.error_code, sizeof c->lobby.error_code);
         json_string(text, "message", c->lobby.error, sizeof c->lobby.error);
         if (!strcmp(c->lobby.error_code, "slow_down"))  /* a chat line too many: say so in the chat */
-            chat_add(c, -1, "", c->lobby.error[0] ? c->lobby.error : "Too many messages: wait a moment.",
+            chat_add(c, NET_CHAT_NOTE, "", c->lobby.error[0] ? c->lobby.error : "Too many messages: wait a moment.",
                      net_now_ms() + c->clock_offset);
         snprintf(line, sizeof line, "net: room %s: %s", c->lobby.code, c->lobby.error);
         changed(c);
@@ -1084,7 +1121,7 @@ int client_chat(NetClient *c, const char *text)
     json_escape(escaped, sizeof escaped, line);
     SDL_LockMutex(c->lock);
     if (c->connected && !c->server_chat)
-        chat_add(c, -1, "", "Chat isn't on this server yet.", net_now_ms() + c->clock_offset), changed(c);
+        chat_add(c, NET_CHAT_NOTE, "", "Chat isn't on this server yet.", net_now_ms() + c->clock_offset), changed(c);
     else if (c->connected) {
         say(c, "{\"type\":\"chat\",\"text\":\"%s\"}", escaped);
         sent = 1;

@@ -136,13 +136,15 @@ int net_riders_ms(void);
 /* ---- text chat (finding 191) ----
    Anyone in the room or a race says a line (1-120 characters once the server has cleaned it; 5
    in 10 s); everyone gets it, the sender too. The client keeps the last NET_CHAT_LINES, oldest
-   first, and adds the server's slow_down refusal as a line of its own (member_id -1). Nothing is
-   kept between rooms: a new room starts empty. */
+   first, and adds the server's slow_down refusal as a line of its own (member_id NET_CHAT_NOTE).
+   It also notes who joins or leaves the room (NET_CHAT_ROOM; finding 204): the room's chat shows
+   those, a race's doesn't. Nothing is kept between rooms: a new room starts empty. */
 enum { NET_CHAT_LINES = 8, NET_CHAT_NAME = 32, NET_CHAT_TEXT = 128, NET_CHAT_MAX = 120 };
+enum { NET_CHAT_NOTE = -1, NET_CHAT_ROOM = -2 };  /* a line's member_id when no member said it */
 
 typedef struct {
     unsigned seq;              /* the line's number since the room began, from 1 */
-    int member_id;             /* the sender, -1 a note from this client (slow_down) */
+    int member_id;             /* the sender; NET_CHAT_NOTE, NET_CHAT_ROOM: this client's notes */
     char name[NET_CHAT_NAME];  /* UTF-8, as the server sent it (truncated) */
     char text[NET_CHAT_TEXT];
     double at;                 /* the server's time, ms since the Unix epoch */
