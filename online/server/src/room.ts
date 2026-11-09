@@ -128,6 +128,8 @@ const RELAY_BINARY_PER_WINDOW = 2000;
 const VOICE_MAX_BYTES = 600;
 /** How long a race's start waits for a racer whose WebRTC session is still connecting. */
 const START_SFU_WAIT_MS = 3000;
+/** The same when TURN keys exist: a browser's TURN retry (finding 205) takes about 2 s plus its setup. */
+const START_SFU_WAIT_TURN_MS = 5000;
 
 /** A member's rejoin token (finding 137): 16 random bytes in hex, sent only to that member's game
     in its welcome. Its rejoin hello sends it back and gets the member again; nothing else does. */
@@ -1303,7 +1305,10 @@ export class Room extends DurableObject<Env> {
     // its race is decided, so one slow connection doesn't send the whole race through this room.
     if (this.transport() === "auto" && this.sfuOn()) {
       const connecting = () => racers.filter((x) => !x.noSfu && !x.sfuConnected && x.sfu && x.sfu.phase !== "failed");
-      for (let waited = 0; waited < START_SFU_WAIT_MS && connecting().length; waited += 100)
+      // With TURN keys a browser that can't connect directly retries through TURN after 2 s (finding 205):
+      // the wait covers that retry too.
+      const wait = (this.env as Env & SfuSecrets).TURN_KEY_ID ? START_SFU_WAIT_TURN_MS : START_SFU_WAIT_MS;
+      for (let waited = 0; waited < wait && connecting().length; waited += 100)
         await new Promise((r) => setTimeout(r, 100));
       if (st !== this.state || st.race) return;
     }
