@@ -54,6 +54,7 @@
 int hle_online_race_riders(void);  /* online.c: the riders in the online race (computer riders off: fewer) */
 #define RACE_CLOCK (*(volatile int32_t *)0x0843EEC8)  /* ticks since GO in phase 2 */
 double port_field_seconds(int counter);  /* fps.c */
+double host_wall_seconds(void);          /* host_api.h: the race feed's hit times */
 #define RACE_TIME port_field_seconds(RACE_CLOCK)      /* seconds since GO, part of a tick too */
 #define RACE_PHASE (*(volatile int32_t *)0x0843F348)  /* on the race screen: 1 countdown, 2-4 race */
 #define MENU (*(volatile int32_t *)0x0829DED8)        /* 9: the race screen */
@@ -659,11 +660,38 @@ void hle_puppet_receive(int sender, const uint8_t *in, int n)
     }
 }
 
+/* The race feed's knockouts (online.c feed_step): the hits this PC heard of lately, by global
+   rider id: its own riders' hits and every hit EVENT the others send (each PC gets them all),
+   whoever applies them. A crash that starts soon after a hit was that hit's knockout. */
+enum { RECENT_HITS = 16 };
+static struct { int victim, attacker; double at; } recent_hits[RECENT_HITS];
+static int recent_next;
+static void hit_heard(int victim, int attacker)
+{
+    if (victim < 0 || attacker < 0 || victim == attacker) return;
+    recent_hits[recent_next].victim = victim;
+    recent_hits[recent_next].attacker = attacker;
+    recent_hits[recent_next].at = host_wall_seconds();
+    recent_next = (recent_next + 1) % RECENT_HITS;
+}
+/* The global rider who last hit global rider victim within `within` seconds, -1 none. */
+int hle_puppet_hit_by(int victim, double within)
+{
+    double now = host_wall_seconds(), best = -1;
+    int who = -1;
+    for (int i = 0; i < RECENT_HITS; i++)
+        if (recent_hits[i].victim == victim && recent_hits[i].at > 0 && now - recent_hits[i].at <= within && recent_hits[i].at > best)
+            best = recent_hits[i].at, who = recent_hits[i].attacker;
+    return who;
+}
+
 /* func_0012E940 (rider self hit by other). A hit by a puppet is decided on its PC; a hit by a
    rider this PC runs on a puppet becomes an EVENT for the PC that runs the puppet (none for a
    finished rider whose player left). */
 int hle_puppet_hit(uint8_t *self, int kind, void *direction, uint8_t *other)
 {
+    if (pp.online && !pp.allow && slot_of(self) >= 0 && slot_of(other) >= 0)
+        hit_heard(to_global(slot_of(self)), to_global(slot_of(other)));
     if (pp.allow || (!puppet(self) && !puppet(other))) return 0;
     int victim = slot_of(self), attacker = slot_of(other);
     if (pp.online && !puppet(other) && owner_of(victim) >= 0 && pp.nevents < MAX_EVENTS) {
@@ -697,6 +725,7 @@ int hle_puppet_take_event(uint8_t *out, int max)
 /* A hit EVENT payload from the PC in lobby slot sender, on a rider this PC runs. */
 void hle_puppet_event(int sender, const uint8_t *in, int n)
 {
+    if (pp.online && n >= 18 && in[0] == EVENT_VERSION && in[1] == EVENT_HIT && RACING) hit_heard(in[3], in[4]);  /* everyone's, for the feed */
     if (!pp.online || n < 18 || in[0] != EVENT_VERSION || in[1] != EVENT_HIT || in[2] != pp.local || !RACING) return;
     int victim = to_local(in[3]), attacker = to_local(in[4]);
     float direction[4] __attribute__((aligned(16))) = {0, 0, 0, 0};

@@ -117,7 +117,7 @@ static void send_pcm(const int16_t *pcm)
     frame[0] = VOICE_EVENT_VERSION, frame[1] = VOICE_EVENT;
     frame[2] = (uint8_t)sequence, frame[3] = (uint8_t)(sequence >> 8);
     sequence++;
-    net_send_frame(NET_FRAME_EVENT, frame, (size_t)(VOICE_HEADER + bytes));
+    net_send_frame(NET_FRAME_VOICE, frame, (size_t)(VOICE_HEADER + bytes));  /* anywhere in the room */
 }
 
 static int talk_key_held(void)
@@ -183,7 +183,7 @@ static int voice_thread(void *unused)
     for (;;) {
         Uint64 now = SDL_GetTicks();
         if (now >= next_settings) { read_settings(); next_settings = now + 1000; }
-        int want = cfg.enabled && net_racing();
+        int want = cfg.enabled && net_voice_open();
         if (!want) {   /* no race (or voice off): the microphone is let go */
             if (mic) { SDL_DestroyAudioStream(mic); mic = NULL; hle_log("voice: microphone closed\n"); }
             SDL_SetAtomicInt(&transmitting, 0);
@@ -260,7 +260,7 @@ int voice_web_wanted(void)
     static Uint64 next_settings;
     Uint64 now = SDL_GetTicks();
     if (now >= next_settings) read_settings(), next_settings = now + 1000;
-    int want = cfg.enabled && net_racing();
+    int want = cfg.enabled && net_voice_open();
     if (!want) SDL_SetAtomicInt(&transmitting, 0);
     return want;
 }

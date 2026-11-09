@@ -26,6 +26,7 @@ int keyboard_focused(void) { return 1; }
 int keyboard_is_down(unsigned typed) { (void)typed; return 0; }
 int text_input_active(void) { return 0; }
 int net_racing(void) { return 0; }
+int net_voice_open(void) { return 0; }
 int net_send_frame(int type, const void *payload, size_t n) { (void)type, (void)payload, (void)n; return 1; }
 void (*net_voice_hook)(int slot, const uint8_t *payload, int n);
 
@@ -188,8 +189,8 @@ int main(void)
           "at the range and in the hysteresis band: the edge's level");
     check(voice_gain(30 * VOICE_UNITS_PER_METRE, range) < 1 && voice_gain(30 * VOICE_UNITS_PER_METRE, range) > VOICE_EDGE,
           "between: quieter with distance");
-    check(voice_group(0, 0) == 1 && voice_group(1, 1) == 2 && !voice_group(0, 1) && !voice_group(1, 0),
-          "racers hear racers by distance, the finished hear the finished, neither the other");
+    check(voice_group(0, 0) == 1 && voice_group(1, 1) == 2 && voice_group(0, 1) == 2 && voice_group(1, 0) == 2,
+          "racers hear racers by distance; the finished and the watching hear and are heard by everyone");
 
     opus_encoder_destroy(encoder);
     printf("RESULT %s\n", failures ? "FAIL" : "PASS");

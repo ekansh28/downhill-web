@@ -675,6 +675,7 @@ static void read_results(const uint8_t *in, int n);
 static void race_chat_heard(int sender, const uint8_t *in, int n);
 static int voice_command(const char *text);
 static void voice_step(void);
+static void feed_step(void);
 
 /* The relayed frames: snapshots to the puppets, events (a hit, the start, a finish, the results). */
 static void receive_frames(void)
@@ -1320,6 +1321,11 @@ static void watch_step(const NetLobby *lobby)
 /* A player who left: their rider goes on as the host's AI (the lowest lobby slot still here is
    the host; it runs the AI riders), unless they had finished: then it stays where it is, finished
    (hle_puppet_drop). If this PC lost the connection, it runs every rider itself. */
+/* the race feed (below, after the race chat it shows among): its state, and a line of it */
+static struct { int crashing[NRIDERS], started, offline_said; } feed;
+enum { FEED_MEMBER = -2 };  /* a race chat line of the feed (race_chat_add) */
+static void race_feed(const char *text);
+
 static void check_left(void)
 {
     NetLobby lobby;
@@ -1337,6 +1343,14 @@ static void check_left(void)
         }
         fprintf(stderr, "online: player %d (%s) left at race tick %d; host now player %d\n", j, on.name[j], RACE_CLOCK,
                 host);
+        {
+            char line[96];
+            if (lobby.offline && j != on.local_slot) snprintf(line, sizeof line, "LOST THE SERVER: RACING ON ALONE");
+            else if (on.finish[j] >= 0) snprintf(line, sizeof line, "%s FINISHED AND LEFT", on.name[j][0] ? on.name[j] : "A PLAYER");
+            else snprintf(line, sizeof line, "%s DISCONNECTED", on.name[j][0] ? on.name[j] : "A PLAYER");
+            if (!lobby.offline || !feed.offline_said) race_feed(line);  /* offline: one line, not one a player */
+            if (lobby.offline) feed.offline_said = 1;
+        }
         hle_puppet_drop(j, host, on.finish[j] >= 0);
     }
 }
@@ -1576,7 +1590,7 @@ static struct {
     unsigned seen;          /* the newest chat line taken */
     int seen_valid, key_held, typing, quick_held;
     char entry[NET_CHAT_MAX + 1];
-    struct { char text[RACE_CHAT_TEXT]; int own, note; double until; } shown[RACE_CHAT_SHOWN];  /* oldest first */
+    struct { char text[RACE_CHAT_TEXT]; int own, note; double until; } shown[RACE_CHAT_SHOWN];  /* oldest first; note 2: the race feed */
 } race_chat;
 /* The menu the race screen has open (OPEN_MENU holds its object; RIDING 0 while a menu is up):
    race chat's quick lines belong to the pause menu. */
@@ -1596,8 +1610,25 @@ static void race_chat_add(const char *name, const char *text, int member, int ow
     if (strlen(shown) >= RACE_CHAT_TEXT) memcpy(shown + RACE_CHAT_TEXT - 3, "..", 3);
     snprintf(race_chat.shown[RACE_CHAT_SHOWN - 1].text, RACE_CHAT_TEXT, "%s", shown);
     race_chat.shown[RACE_CHAT_SHOWN - 1].own = own;
-    race_chat.shown[RACE_CHAT_SHOWN - 1].note = member < 0;
+    race_chat.shown[RACE_CHAT_SHOWN - 1].note = member == FEED_MEMBER ? 2 : member < 0;
     race_chat.shown[RACE_CHAT_SHOWN - 1].until = host_wall_seconds() + RACE_CHAT_SECONDS;
+}
+
+/* ---- the race feed ----
+   What happens to the race's players, as lines among the race chat's in a colour of their own:
+   a player who leaves or drops out (check_left), and a knockout: a rider whose crash starts
+   FEED_KNOCKOUT_S after a hit, "ATTACKER KNOCKED OUT VICTIM" (puppet.c hears every hit EVENT, so
+   every PC can tell). A crash without a hit says nothing: a race has many. */
+#define FEED_KNOCKOUT_S 3.0
+static const char *feed_name(int global)
+{
+    if (global >= 0 && global < on.nslots && on.name[global][0]) return on.name[global];
+    return "A CPU RIDER";
+}
+static void race_feed(const char *text)
+{
+    race_chat_add("", text, FEED_MEMBER, 0);
+    fprintf(stderr, "online: feed: %s\n", text);
 }
 
 /* 1 when slot (NET_MAX_SLOTS: this PC) may say one more line now: CHAT_BURST in CHAT_WINDOW s. */
@@ -1736,7 +1767,8 @@ static void race_chat_draw(int view)
         double left = race_chat.shown[i].until - now;
         if (left <= 0) continue;
         int a = left < 1 ? (int)(128 * left) : 128;
-        if (race_chat.shown[i].note) race_chat_line(view, x, y, race_chat.shown[i].text, 128, 64, 64, a);
+        if (race_chat.shown[i].note == 2) race_chat_line(view, x, y, race_chat.shown[i].text, 128, 104, 40, a);  /* the race feed */
+        else if (race_chat.shown[i].note) race_chat_line(view, x, y, race_chat.shown[i].text, 128, 64, 64, a);
         else if (race_chat.shown[i].own) race_chat_line(view, x, y, race_chat.shown[i].text, 128, 120, 64, a);
         else race_chat_line(view, x, y, race_chat.shown[i].text, 128, 128, 128, a);
     }
@@ -1771,7 +1803,7 @@ static void race_chat_draw(int view)
    - the pan is the side of this player's view the speaker is on (behind it, the middle).
    "/MUTE NAME" and "/UNMUTE NAME" in chat mute a player for this PC (race_chat_say). */
 enum { VOICE_RANGE_M = 50 };
-static struct { int heard[NET_MAX_SLOTS], active; } voice;
+static struct { int heard[NET_MAX_SLOTS], active, mode, in_room, checked; } voice;  /* mode: 1 the room, 2 a race */
 
 static float voice_range_units(void)
 {
@@ -1783,12 +1815,54 @@ static float voice_range_units(void)
     return m * VOICE_UNITS_PER_METRE;
 }
 
+int hle_puppet_hit_by(int victim, double within);  /* puppet.c: the race feed's knockouts */
+static void feed_step(void)
+{
+    int racing = online_mode() && on.started && EE32(MENU) == LOAD_MENU && on.setup_done && race_running();
+    if (!racing) { memset(&feed, 0, sizeof feed); return; }
+    if (!feed.started) {  /* a race's first frame: what crashes now is from before */
+        feed.started = 1;
+        for (int s = 0; s < NRIDERS; s++) feed.crashing[s] = 1;
+    }
+    for (int slot = 0; slot < hle_online_race_riders() && slot < NRIDERS; slot++) {
+        int crashing = (*(volatile uint32_t *)(RIDER(slot) + 0x4098) & 4) != 0;  /* the crash controller's flags */
+        int was = feed.crashing[slot];
+        feed.crashing[slot] = crashing;
+        if (!crashing || was) continue;
+        int victim = hle_puppet_global(slot), by = hle_puppet_hit_by(victim, FEED_KNOCKOUT_S);
+        if (victim < 0 || by < 0 || by == victim) continue;
+        char line[96];
+        snprintf(line, sizeof line, "%s KNOCKED OUT %s", feed_name(by), feed_name(victim));
+        race_feed(line);
+    }
+}
+
 static void voice_step(void)
 {
     int racing = online_mode() && on.started && EE32(MENU) == LOAD_MENU && on.setup_done;
     if (!racing) {
-        if (voice.active) host_service_voice_drop(-1), memset(&voice, 0, sizeof voice);
+        /* Anywhere else in a room (ONLINE's pages, the race room, watching a race from the room):
+           everyone heard at full level, from the middle. The room says each voice's slot (room.ts
+           relayVoice). Asked every half second: the lobby's copy is big. */
+        if (++voice.checked >= 30 || !voice.mode) {
+            NetLobby lobby;
+            host_service_net_get_lobby(GADDR(&lobby));
+            voice.in_room = lobby.state == NET_LOBBY || lobby.state == NET_RACING;
+            voice.checked = 0;
+        }
+        int mode = voice.in_room ? 1 : 0;
+        if (mode != voice.mode) {  /* a race's slots and the room's differ: what waited goes */
+            host_service_voice_drop(-1);
+            memset(voice.heard, 0, sizeof voice.heard);
+            voice.mode = mode, voice.active = 0;
+        }
+        for (int g = 0; g < NET_MAX_SLOTS; g++) host_service_voice_place(g, mode ? 1000 : 0, 0);
         return;
+    }
+    if (voice.mode != 2) {
+        host_service_voice_drop(-1);
+        memset(voice.heard, 0, sizeof voice.heard);
+        voice.mode = 2;
     }
     voice.active = 1;
     float range = voice_range_units();
@@ -1825,6 +1899,8 @@ static void voice_step(void)
         }
         host_service_voice_place(g, (int)(gain * 1000), (int)(pan * 1000));
     }
+    /* the room's members outside the race (watching it): their slots follow the racers' */
+    for (int g = on.nslots; g < NET_MAX_SLOTS; g++) host_service_voice_place(g, 1000, 0);
 }
 
 /* a starts with b, in any case */
@@ -2158,6 +2234,7 @@ void pads_begin_field(void)
     if (on.started) state_sync();
     race_chat_step();
     voice_step();
+    feed_step();
     if (on.started && EE32(MENU) != LOAD_MENU) race_left();
 }
 

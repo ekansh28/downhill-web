@@ -663,14 +663,15 @@ void (*net_voice_hook)(int slot, const uint8_t *payload, int n);
 void client_on_binary(NetClient *c, const uint8_t *data, size_t n)
 {
     /* voice chat (finding 183): straight to its hook, not through the frame queue */
-    if (net_voice_hook && n >= 4 && n <= NET_FRAME_MAX && data[0] == NET_FRAME_EVENT && data[2] == NET_VOICE_VERSION &&
-        data[3] == NET_VOICE_KIND) {
-        int racing;
+    /* a race's voice EVENT, or voice anywhere in the room (NET_FRAME_VOICE) */
+    if (net_voice_hook && n >= 4 && n <= NET_FRAME_MAX && (data[0] == NET_FRAME_EVENT || data[0] == NET_FRAME_VOICE) &&
+        data[2] == NET_VOICE_VERSION && data[3] == NET_VOICE_KIND) {
+        int hear;
         SDL_LockMutex(c->lock);
         c->last_rx = net_now_ms();
-        racing = c->racing;
+        hear = data[0] == NET_FRAME_VOICE ? c->connected : c->racing;
         SDL_UnlockMutex(c->lock);
-        if (racing) net_voice_hook(data[1], data + 2, (int)n - 2);   /* outside the lock: its own queues */
+        if (hear) net_voice_hook(data[1], data + 2, (int)n - 2);   /* outside the lock: its own queues */
         return;
     }
     SDL_LockMutex(c->lock);
@@ -1092,6 +1093,14 @@ int client_chat(NetClient *c, const char *text)
     return sent;
 }
 
+int client_voice_open(NetClient *c)
+{
+    SDL_LockMutex(c->lock);
+    int open = c->connected && (c->lobby.state == NET_LOBBY || c->lobby.state == NET_RACING);
+    SDL_UnlockMutex(c->lock);
+    return open;
+}
+
 void client_get_chat(NetClient *c, NetChat *out)
 {
     SDL_LockMutex(c->lock);
@@ -1108,7 +1117,8 @@ int client_send_frame(NetClient *c, int type, const void *payload, size_t n)
     frame[1] = 0;
     memcpy(frame + 2, payload, n);
     SDL_LockMutex(c->lock);
-    if (c->racing && (c->connected || c->rejoining)) {
+    if (type == NET_FRAME_VOICE ? c->connected && (c->lobby.state == NET_LOBBY || c->lobby.state == NET_RACING)
+                                : c->racing && (c->connected || c->rejoining)) {
         send_binary(c, frame, n + 2);
         c->states_sent += type == NET_FRAME_STATE;
         sent = 1;

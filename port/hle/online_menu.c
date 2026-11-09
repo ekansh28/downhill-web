@@ -1426,10 +1426,24 @@ static void draw_card(int i)
     else if (now.racing && !strcmp(m->race_state, "finished")) tag = "DONE";
     else if (now.racing && !strcmp(m->race_state, "dnf")) tag = "OUT";
     else if (now.starting && m->ready) tag = "STARTING";
-    snprintf(line, sizeof line, "%d %.9s%s", i + 1, m->name, m->id == l->host_id ? " HOST" : m->id == l->member_id ? " YOU" : "");
+    /* the name, then its tags in their own colours: HOST yellow-orange, YOU red (a host sees both) */
+    int is_host = m->id == l->host_id, is_you = m->id == l->member_id;
+    char sized[64];
+    snprintf(line, sizeof line, "%d %.9s", i + 1, m->name);
     for (char *c = line; *c; c++) if (*c >= 'a' && *c <= 'z') *c -= 32;
+    snprintf(sized, sizeof sized, "%s%s%s", line, is_host ? " HOST" : "", is_you ? " YOU" : "");
+    int pct = 85;  /* as fit(): the whole row, tags included, within 112 */
+    MenuStyle name_style = menu_style(st_row, pct, -1, 0, 0);
+    while (pct > 60 && menu_text_width(sized, &name_style) > X(112)) pct -= 5, name_style = menu_style(st_row, pct, -1, 0, 0);
     rect(x, y + 1, 2, 18, m->ready ? green : amber, 128);
-    put(MENU_LEFT, x + 5, y + 2, line, fit(line, st_row, 85, 112));
+    put(MENU_LEFT, x + 5, y + 2, line, name_style);
+    int tag_x = x + 5 + menu_text_width(line, &name_style) * 640 / vw + 4;
+    if (is_host) {
+        MenuStyle host_style = menu_style(st_row, pct, 0x80, 0x6C, 0x10);  /* yellow-orange */
+        put(MENU_LEFT, tag_x, y + 2, "HOST", host_style);
+        tag_x += menu_text_width("HOST", &host_style) * 640 / vw + 4;
+    }
+    if (is_you) put(MENU_LEFT, tag_x, y + 2, "YOU", menu_style(st_row, pct, 0x80, 0x20, 0x20));  /* red */
     put(MENU_RIGHT, x + w - 5, y + 2, tag, menu_style(st_on, 70, -1, 0, 0));
     detail[0] = 0;
     if (now.racing && !strcmp(m->race_state, "finished")) {
@@ -2065,7 +2079,10 @@ static void page_accept(MenuPage *p, int row)
     switch (screen) {
     case HOME:
         home_row = row;
-        if (row == HOME_NAME) {
+        if (row == HOME_NAME && getenv("DHD_NET_NAME_PAGE")) {
+            /* the browser's home page asks the username (main.js) and owns it: no second editor here */
+            snprintf(status, sizeof status, "Your username is set on the home page");
+        } else if (row == HOME_NAME) {
             snprintf(entry, sizeof entry, "%s", name);
             entry_pick = 0;
             go(NAME);

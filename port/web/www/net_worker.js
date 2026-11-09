@@ -39,7 +39,7 @@ const parent = node ? (await import('node:worker_threads')).parentPort : null;
 const post = m => node ? parent.postMessage(m) : postMessage(m);
 const enc = new TextEncoder(), dec = new TextDecoder();
 const TICK_MS = 10, KEEPALIVE_MS = 1000, VOICE_FRAME = 960, VOICE_AHEAD_MS = 50, ALIVE_MS = 100;
-const NET_FRAME_PING = 3, NET_FRAME_EVENT = 6, VOICE_VERSION = 2, VOICE_KIND = 11;
+const NET_FRAME_PING = 3, NET_FRAME_EVENT = 6, NET_FRAME_VOICE = 7, VOICE_VERSION = 2, VOICE_KIND = 11;
 
 let started = null;
 const early = [];
@@ -68,6 +68,7 @@ async function start(m) {
   // ---- the sockets ----
   const sockets = new Map(); let current = 0, sentAt = 0, aliveAt = 0;
   const racing = () => Atomics.load(shared, W.racing) !== 0;
+  const inRoom = () => Atomics.load(shared, W.inRoom) !== 0;
   function open(sock, url) {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { say(`online: ${e.message}`); tell(OP.CLOSED, sock, 1006, enc.encode(e.message)); return; }
@@ -91,8 +92,8 @@ async function start(m) {
   }
   // A race frame from the socket or the SFU: voice to its decoder, the rest to the game.
   function arrived(sock, data, t) {
-      if (data.length >= 4 && data[0] === NET_FRAME_EVENT && data[2] === VOICE_VERSION && data[3] === VOICE_KIND) {
-        if (racing() && voice) hear(data[1], data.subarray(2));
+      if (data.length >= 4 && (data[0] === NET_FRAME_EVENT || data[0] === NET_FRAME_VOICE) && data[2] === VOICE_VERSION && data[3] === VOICE_KIND) {
+        if (voice && (data[0] === NET_FRAME_VOICE ? inRoom() : racing())) hear(data[1], data.subarray(2));
         if (t - aliveAt >= ALIVE_MS) { aliveAt = t; tell(OP.ALIVE, sock, 0, null, t); }
         return;
       }
@@ -149,9 +150,9 @@ async function start(m) {
         web_getenv: (name, out, cap) => { const v = env[vstr(name)]; if (v === undefined || v === '') return 0;
           const b = enc.encode(String(v)).subarray(0, cap - 1); vbytes().set(b, out); vbytes()[out + b.length] = 0; return 1; },
         web_key_held: k => +(k > 0 && k < 256 && !!keys && !Atomics.load(shared, W.textActive) && Atomics.load(keys, k) !== 0),
-        web_net_racing: () => +racing(),
+        web_net_voice_open: () => +inRoom(),
         // client_send_frame's frame: [type, 0 (the server stamps the slot), payload], while racing
-        web_net_send: (type, at, n) => { if (!racing() || !current || n < 0 || n > 3070) return 0;
+        web_net_send: (type, at, n) => { if (!(type === NET_FRAME_VOICE ? inRoom() : racing()) || !current || n < 0 || n > 3070) return 0;
           const f = new Uint8Array(n + 2); f[0] = type; f.set(vbytes().subarray(at, at + n), 2); return +send(current, f, true); },
       },
       wasi_snapshot_preview1: {

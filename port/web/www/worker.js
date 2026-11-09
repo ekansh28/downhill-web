@@ -200,7 +200,7 @@ async function start(m) {
   // (the arrows still move the pad picker), and a key typed there presses nothing until let go.
   const ARROWS = new Set([0x25, 0x26, 0x27, 0x28]), blocked = new Uint8Array(256);
   let textActive = false;
-  let presenceRoom = '', presenceIn = false;  // the last room told to the page (host_service_presence)
+  let presenceRoom = '', presenceIn = false, presenceRacing = false;  // the last room told to the page (host_service_presence)
   const typedClear = () => Atomics.store(typed, 1, Atomics.load(typed, 0));
   function textEdit(at, capacity, allowedAt) {
     const allowed = str(allowedAt), out = span(at, capacity); let n = out.indexOf(0); if (n < 0) n = capacity - 1;
@@ -380,8 +380,9 @@ async function start(m) {
     // only the room goes to the page, for its invite link (main.js); a private room's code is
     // empty there, as everywhere outside the core. Sent when it changes.
     host_service_presence: at => { if (bytes.buffer !== memory.buffer) refresh();
-      const kind = dv.getInt32(at, true), inRoom = kind === 4 || kind === 5, code = inRoom ? str(at + 44) : '';
-      if (code !== presenceRoom || inRoom !== presenceIn) { presenceRoom = code; presenceIn = inRoom; post('room', { code, inRoom }); } },
+      const kind = dv.getInt32(at, true), inRoom = kind === 4 || kind === 5, code = inRoom ? str(at + 44) : '', racing = kind === 5;
+      if (code !== presenceRoom || inRoom !== presenceIn || racing !== presenceRacing) {
+        presenceRoom = code; presenceIn = inRoom; presenceRacing = racing; post('room', { code, inRoom, racing }); } },
     // Online (net.js: port/net's client as dhd_net.wasm over the net worker's WebSocket).
     ...net,
     host_pacing_period: () => 1 / 60,

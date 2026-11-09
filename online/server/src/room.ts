@@ -15,6 +15,7 @@ import {
   FRAME_PING,
   FRAME_PONG,
   FRAME_STATE,
+  FRAME_VOICE,
   HELLO_TIMEOUT_MS,
   OUTDATED_MESSAGE,
   MAX_BINARY_BYTES,
@@ -123,6 +124,8 @@ const FEATURE_NO_SFU = "no_sfu";
     60 a second for a player's own rider and 30 for each AI bundle, voice frames, events, pings),
     not the SFU race's BINARY_PER_WINDOW, which only counts pings. */
 const RELAY_BINARY_PER_WINDOW = 2000;
+/** A voice frame's largest size: its header and one 20 ms Opus packet (voice.c VOICE_PACKET_MAX). */
+const VOICE_MAX_BYTES = 600;
 
 /** A member's rejoin token (finding 137): 16 random bytes in hex, sent only to that member's game
     in its welcome. Its rejoin hello sends it back and gets the member again; nothing else does. */
@@ -443,7 +446,9 @@ export class Room extends DurableObject<Env> {
     // closed.
     let t = this.tallies.get(ws);
     if (!t) this.tallies.set(ws, (t = newTally(now)));
-    const verdict = tally(t, typeof msg !== "string", now, this.relayRacer(ws) ? this.relayCaps() : this.caps());
+    // a relay race's racers and voice chat (50 frames a second a talker) get a binary cap that fits
+    const voiceFrame = typeof msg !== "string" && msg.byteLength > 0 && new Uint8Array(msg)[0] === FRAME_VOICE;
+    const verdict = tally(t, typeof msg !== "string", now, this.relayRacer(ws) || voiceFrame ? this.relayCaps() : this.caps());
     if (verdict !== "ok") {
       if (verdict === "warn") this.error(ws, "too_fast", TOO_FAST_WARNING);
       if (verdict === "close") {
@@ -714,7 +719,32 @@ export class Room extends DurableObject<Env> {
     } catch {}
   }
 
+  /** Voice chat anywhere in the room (FRAME_VOICE): to every other member, in a race or not, byte 1
+      the sender's voice slot: in a race its race slot, a member outside it (a spectator) the next
+      free ones after the racers; with no race its place in the room. A player's game hears each
+      slot as it decides (port/hle/online.c voice_step). */
+  private relayVoice(ws: WebSocket, data: ArrayBuffer): void {
+    const st = this.state;
+    const id = (ws.deserializeAttachment() as SocketInfo | null)?.memberId;
+    if (!st || id == null || data.byteLength < 6 || data.byteLength > VOICE_MAX_BYTES) return;
+    let slot: number;
+    if (st.race) {
+      const racer = st.race.slots.indexOf(id);
+      slot = racer >= 0 ? racer
+        : st.race.slots.length + st.members.filter((m) => !st.race!.slots.includes(m.id)).findIndex((m) => m.id === id);
+    } else slot = st.members.findIndex((m) => m.id === id);
+    if (slot < 0 || slot >= MAX_MEMBERS) return;
+    const b = new Uint8Array(data);
+    b[1] = slot;
+    for (const [member, s] of this.sockets)
+      if (member !== id)
+        try {
+          s.send(data);
+        } catch {}
+  }
+
   private relay(ws: WebSocket, data: ArrayBuffer): void {
+    if (new Uint8Array(data)[0] === FRAME_VOICE) return this.relayVoice(ws, data);
     let slot = this.slotOf.get(ws);
     if (slot === undefined) {
       slot = this.findSlot(ws);

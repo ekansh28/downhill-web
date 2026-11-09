@@ -59,6 +59,7 @@ export const W = {
   enabled: 40, transmitting: 41, mic: 42, level: 43, key: 44,
   talking: 45, speak: 55,                                 // VOICE_STATE_TALKING, SPEAK_LEVEL per slot
   pongs: 65, keepalives: 66, mixed: 67, voiceFrames: 68,  // counters (the status line, the checks)
+  inRoom: 69,                                             // in a room: voice chat may go out (net_voice_open)
   size: 72,
 };
 // The others' voices for the page (audio.js dhd-voice): [write, read, runs dry, -] as running frame

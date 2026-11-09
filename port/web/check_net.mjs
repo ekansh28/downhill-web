@@ -86,6 +86,13 @@ if (guest.net.host_service_net_join_room(guest.put(room.code)) !== 0) fail('join
 await until('the guest in the room', () => guest.lobby().state === 2 && guest.lobby().members === 2);
 await until('the host sees two', () => host.lobby().members === 2);
 console.log('both in the room: 2 members');
+// Voice in the room, before any race (this fork: FRAME_VOICE, room.ts relayVoice): the host's open
+// microphone reaches the guest, the slot its place in the room (the host's: 0).
+for (let slot = 0; slot < 10; slot++) guest.net.host_service_voice_place(slot, 1000, 0);
+{ const lobbyHeard = await until("the host heard in the room, before the race", () => {
+    const last = heardSince(wall() - 100);
+    return last.length && last.every(c => c.rms > 500) && guest.net.host_service_voice_state(4, 0) ? last.at(-1).rms : null; });
+  console.log(`room voice: the guest hears the host before any race: RMS ${lobbyHeard.toFixed(0)}, slot 0 talking`); }
 // Chat (finding 191): a line from the guest reaches both, the sender too, as net.h's NetChat
 // (u32 seq, i32 count, then lines of u32 seq, i32 memberId, name[32], text[128], f64 at).
 const chatAt = 0xA000, readChat = p => { p.net.host_service_net_get_chat(chatAt); const dv = new DataView(p.ram.buffer), n = dv.getInt32(chatAt + 4, true);

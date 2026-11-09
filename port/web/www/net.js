@@ -120,6 +120,7 @@ export async function createNet(bytes, guest, say, host = {}) {
   function publish() {
     if (!x) return;
     Atomics.store(shared, W.racing, x.host_service_net_racing());
+    Atomics.store(shared, W.inRoom, x.net_voice_open());
     Atomics.store(shared, W.slot, x.net_local_slot() & 255);
   }
   const env = {

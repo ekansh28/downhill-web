@@ -26,12 +26,12 @@ static inline float voice_gain(float distance, float range)
     return t >= 1 ? VOICE_EDGE : 1 - t * (1 - VOICE_EDGE);
 }
 
-/* The groups: racers hear racers (by distance), the finished hear the finished (all of them, at
-   full level), and neither hears the other. 0 not heard, 1 by distance, 2 at full level. */
+/* Who hears whom in a race: a racer hears a racer by distance; anyone finished (or watching) hears
+   everyone and is heard by everyone at full level, wherever they are. 1 by distance, 2 at full
+   level (voice chat works anywhere, this fork: the lobby and the race room hear everyone too). */
 static inline int voice_group(int listener_finished, int speaker_finished)
 {
-    if (listener_finished != speaker_finished) return 0;
-    return speaker_finished ? 2 : 1;
+    return listener_finished || speaker_finished ? 2 : 1;
 }
 
 #endif

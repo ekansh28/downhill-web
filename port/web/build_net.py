@@ -17,7 +17,7 @@ net_web.c's struct sizes, malloc and the function table, through which net.js ca
 handler's callbacks. The client runs on the game worker's one thread, so port/web/net/SDL3's locks
 do nothing.
 
-dhd_voice imports env.web_now_ns, web_getenv, web_key_held, web_net_racing and web_net_send
+dhd_voice imports env.web_now_ns, web_getenv, web_key_held, web_net_voice_open and web_net_send
 (port/web/net/voice_web.c) and WASI's fd_write; it exports voice.c's host_service_voice_*, the mix
 and the microphone's entry points. It too runs on one thread (the net worker's)."""
 import os,subprocess,sys
@@ -30,7 +30,7 @@ NET_SOURCES=[ROOT/'port/net'/n for n in ('client.c','json.c','join.c','net.c')]+
 NET_EXPORTS=['host_service_net_'+n for n in ('init','create_room','join_room','leave','get_lobby','pick','set_ready','start_race',
          'racing','seconds','server_ms','send_frame','receive_frame','list_lobbies','set_room',
          'send_chat','get_chat',
-         'finish','back','rules','rotation','end_race')]+['net_local_slot','web_net_lobby_size','web_net_info_size','web_net_chat_size','malloc','free']
+         'finish','back','rules','rotation','end_race')]+['net_local_slot','net_voice_open','web_net_lobby_size','web_net_info_size','web_net_chat_size','malloc','free']
 VOICE_SOURCES=[ROOT/'port/host/voice.c',ROOT/'port/web/net/voice_web.c']
 # voice chat (voice.c): the game's host_service_voice_*, the mix, the page's microphone
 VOICE_EXPORTS=['host_service_voice_'+n for n in ('frame','place','mute','drop','state')]+['voice_open','voice_mix',

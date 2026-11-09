@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import { Client, startedRace } from "./helpers";
+
+// Voice chat anywhere in a room (FRAME_VOICE = 7, room.ts relayVoice): every other member gets it,
+// racing or not, byte 1 the sender's voice slot.
+const voice = (seq: number) => new Uint8Array([7, 9, 2, 11, seq, 0, 1, 2, 3]).buffer;
+
+describe("voice anywhere in the room", () => {
+  it("reaches everyone in the lobby, before any race, slot = place in the room", async () => {
+    const { host, code } = await Client.host("Ann");
+    const bo = await Client.join(code, "Bo");
+    const cy = await Client.join(code, "Cy");
+    bo.ws.send(voice(1));
+    for (const c of [host, cy]) expect([...(await c.binary())].slice(0, 5)).toEqual([7, 1, 2, 11, 1]);
+    await expect(bo.next((f) => typeof f !== "string", 100)).rejects.toThrow("timed out");
+  });
+
+  it("in a race: stamped with the sender's race slot, both ways", async () => {
+    const { clients } = await startedRace(3);
+    clients[2].ws.send(voice(2));
+    for (const c of [clients[0], clients[1]]) expect([...(await c.binary())].slice(0, 2)).toEqual([7, 2]);
+    clients[0].ws.send(voice(3));
+    for (const c of [clients[1], clients[2]]) expect([...(await c.binary())].slice(0, 2)).toEqual([7, 0]);
+  });
+
+  it("50 frames a second for a few seconds without the guard's too_fast", async () => {
+    const { host, code } = await Client.host("Ann");
+    const bo = await Client.join(code, "Bo");
+    for (let i = 0; i < 300; i++) bo.ws.send(voice(i & 255));
+    for (let i = 0; i < 300; i++) expect((await host.binary())[4]).toBe(i & 255);
+    await expect(bo.next((f) => typeof f === "string" && JSON.parse(f).type === "error", 100)).rejects.toThrow("timed out");
+  });
+});

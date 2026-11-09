@@ -1,6 +1,17 @@
 [
   {
     "date": "2026-11-09",
+    "title": "Voice chat everywhere, race feed, usernames",
+    "items": [
+      "Voice chat works anywhere in a room now: the lobby, the race room, before the start and while watching. In a race, other riders still sound nearer or farther by distance; riders who finished or are watching are heard by everyone.",
+      "The race shows what happens: \"NAME KNOCKED OUT NAME\" when a hit throws a rider off, and \"NAME DISCONNECTED\" when a player leaves.",
+      "In the room's player list, HOST is shown in yellow and YOU in red.",
+      "Pick your username on this page before you play: it's the name other players see.",
+      "The Invite friends button gets out of the way once the race starts (it stays in the ` menu)."
+    ]
+  },
+  {
+    "date": "2026-11-09",
     "title": "Invite links say whose game it is",
     "items": [
       "A room's invite link (menu > Copy invite link, or Invite friends) now shows \"Join NAME's game\" with how many riders are in, when you paste it in Discord or WhatsApp.",

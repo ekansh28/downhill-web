@@ -82,6 +82,9 @@ export const FRAME_PONG = 4;
  *  Realtime SFU (finding 158), never this server; a WebSocket message of either type is dropped. */
 export const FRAME_STATE = 5;
 export const FRAME_EVENT = 6;
+/** Voice chat anywhere in a room (this fork): [7, slot, the voice payload]. The room copies it to
+    every other member, racing or not, byte 1 stamped with the sender's voice slot (room.ts). */
+export const FRAME_VOICE = 7;
 export const PING_MAX_PAYLOAD = 32;
 
 /** Refusal reasons and the close code each one uses. */

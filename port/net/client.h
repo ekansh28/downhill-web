@@ -131,6 +131,7 @@ void client_rotation(NetClient *c, const unsigned char *ids, int count);
 void client_leave(NetClient *c);  /* says so before the transport closes */
 void client_lobby(NetClient *c, NetLobby *out);
 int client_chat(NetClient *c, const char *text);  /* 1 sent */
+int client_voice_open(NetClient *c);  /* in a room, connected: voice may go out (NET_FRAME_VOICE) */
 void client_get_chat(NetClient *c, NetChat *out);
 /* The public list's answer (GET /v1/lobbies) into out, fetched between local times sent and got
    (net_now_ms). Its "now" sets the server clock when no room's pings have (finding 135). Returns

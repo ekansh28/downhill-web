@@ -163,6 +163,8 @@ void net_get_chat(NetChat *out);                   /* a copy, for the UI */
 
 int net_racing(void);
 int net_local_slot(void);
+/* 1 while this game is in a room (its lobby or a race): voice chat may go out (NET_FRAME_VOICE). */
+int net_voice_open(void);
 
 /* Race frames, carried by the Cloudflare Realtime SFU to every other racer (finding 158): a STATE
    bundle of riders this PC owns, an event it decided for another PC's rider. A frame is type, slot
@@ -171,6 +173,9 @@ int net_local_slot(void);
    STATE_BUNDLE_MAX bytes (port/hle/state_bundle.h: as many riders as fit one datagram, finding
    169); a PC with more riders sends several. The server's MAX_BINARY_BYTES is the same. */
 enum { NET_FRAME_STATE = 5, NET_FRAME_EVENT = 6, NET_FRAME_MAX = 3072, NET_RELAY_QUEUE = 128 };
+/* Voice chat anywhere in a room (this fork; online/server FRAME_VOICE): the voice payload, sent to
+   the room, which copies it to every other member with byte 1 the sender's voice slot. */
+enum { NET_FRAME_VOICE = 7 };
 /* The race's pings (client.c): type, slot, the send time; the server answers PONG with the rest
    as it was. */
 enum { NET_FRAME_PING = 3, NET_FRAME_PONG = 4 };

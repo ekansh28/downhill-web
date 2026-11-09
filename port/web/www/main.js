@@ -225,6 +225,7 @@ async function micNames() {
 }
 async function start(source) {
   await siteReady;  // this site's server, if it is one, before the game reads its settings
+  applyUsername();  // the home page's username: the game's online name
   navigator.storage?.persist?.().catch(() => {});  // keep the saves and the disc when the browser is short of space
   $('start').disabled = true; $('iso').disabled = true; $('hosted').disabled = true; running = true;
   document.body.classList.add('running'); status.textContent = 'starting';
@@ -258,7 +259,7 @@ async function start(source) {
     else if (m.type === 'running') status.textContent = 'running';
     else if (m.type === 'clipboard') { navigator.clipboard?.writeText(m.text).catch(e => addLog(`clipboard: ${e.message}`));
       if (JOIN_CODE.test(m.text)) invite(m.text); }  // the player copied their room's code (Circle)
-    else if (m.type === 'room') invite(m.code, m.inRoom);
+    else if (m.type === 'room') invite(m.code, m.inRoom, m.racing);
     else if (m.type === 'mic') microphone(m.on, m.device).then(state => worker.postMessage({ type: 'mic-state', state }));
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
     else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
@@ -357,15 +358,19 @@ addEventListener('drop', e => { e.preventDefault(); document.body.classList.remo
   if (running || !e.dataTransfer?.files.length) return;
   $('iso').files = e.dataTransfer.files; $('iso').onchange(); });
 $('start').onclick = () => start({ file: $('iso').files[0], env });
+
 // An invite (finding 181): index.html?room=K7M2QX opens ONLINE after Start and joins that room
 // (DHD_NET_ROOM, port/hle/online_menu.c). The menu's "Copy invite link" makes such a link for the
 // room the player is in: a public room's code comes with the game's presence (worker.js), a
 // private room's only once the player has copied it in the room (Circle), as the game keeps it.
 const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
 let inviteCode = '';
-function invite(code, inRoom = true) {
+// The floating Invite friends goes while an online race runs (PRESENCE_ONLINE_RACE): it would sit
+// over the race; the menu's Copy invite link stays.
+function invite(code, inRoom = true, racing = false) {
   if (code) inviteCode = code; else if (!inRoom) inviteCode = '';
-  $('invite').hidden = $('inviteFloat').hidden = !inviteCode;
+  $('invite').hidden = !inviteCode;
+  $('inviteFloat').hidden = !inviteCode || racing;
 }
 $('inviteFloat').onclick = () => $('invite').onclick();
 $('invite').onclick = () => {
@@ -385,6 +390,35 @@ const env = Object.fromEntries([...params].filter(([k]) => k.startsWith('env.'))
 // WebRTC here: the online client may race over the SFU (sfu.js; client.c leaves no_sfu out of its hello).
 // ?env.DHD_NET_SFU=0 keeps this browser on relay races.
 if (typeof RTCPeerConnection === 'function' && !('DHD_NET_SFU' in env)) env.DHD_NET_SFU = '1';
+
+// The username, on the home page (not in ONLINE): the letters the game shows (A-Z, 0-9, space, -;
+// 12 at most, as port/render/settings' name rule), kept in this browser, and the game's online name
+// (DHD_NET_NAME) from Start on. The Play buttons wait for one. ?env.DHD_NET_NAME still wins.
+const USERNAME = 'dhd-username', NAME_LETTERS = /[^A-Z0-9 -]/g;
+const cleanName = text => String(text || '').toUpperCase().replace(NAME_LETTERS, '').replace(/\s+/g, ' ').trimStart().slice(0, 12);
+const urlName = 'DHD_NET_NAME' in env;
+function username() { return cleanName($('username').value).trim(); }
+function applyUsername() { if (!urlName && username()) env.DHD_NET_NAME = username(), env.DHD_NET_NAME_PAGE = '1'; }  // the game's own name editor then defers to this page
+function nameGate() {
+  const missing = !username();
+  $('username').closest('.username').classList.toggle('needed', missing);
+  for (const id of ['hosted', 'start']) if (missing) $(id).dataset.needsName = '1'; else delete $(id).dataset.needsName;
+  $('hosted').title = $('start').title = missing ? 'Type your username first' : '';
+}
+try { $('username').value = localStorage.getItem(USERNAME) || ''; } catch { /* no storage */ }
+if (urlName) $('username').value = env.DHD_NET_NAME;
+$('username').addEventListener('input', () => {
+  const at = $('username').selectionStart, clean = cleanName($('username').value);
+  if (clean !== $('username').value) { $('username').value = clean; $('username').setSelectionRange(at, at); }
+  try { localStorage.setItem(USERNAME, username()); } catch { /* no storage */ }
+  nameGate();
+});
+nameGate();
+// a Play press without a name: the username box asks first (capture: before the buttons' own handlers)
+for (const id of ['hosted', 'start']) $(id).addEventListener('click', e => {
+  if (!username()) { e.stopImmediatePropagation(); e.preventDefault(); $('username').focus();
+    $('username').closest('.username').classList.add('needed'); }
+}, true);
 const room = (params.get('room') || '').toUpperCase();
 if (JOIN_CODE.test(room) && !('DHD_NET_ROOM' in env)) env.DHD_NET_ROOM = room;
 else if (room) addLog(`?room=${room}: not a join code (6 letters and digits)`);

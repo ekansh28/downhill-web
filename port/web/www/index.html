@@ -54,6 +54,8 @@
   fieldset { display: flex; flex-direction: column; gap: 8px; }
   .disc-state { color: #000080; }
   .access[hidden] { display: none; }
+  .username input { width: 100%; text-transform: uppercase; }
+  .username.needed label::after { content: "  - type one to play"; color: #800000; }
   .access input { width: 100%; }
   .gpu-tip { margin: 0; padding: 6px 8px; background: #ffffe1; border: 1px solid #000; }
   .gpu-tip[hidden] { display: none; }
@@ -130,6 +132,11 @@
     <div class="window-body">
       <h1>Downhill Domination</h1>
       <p class="intro">In your browser: race friends online or ride single player.</p>
+      <!-- the player's online name, asked here once (main.js: kept in this browser, DHD_NET_NAME) -->
+      <div class="field-row-stacked username">
+        <label for="username">Your username (shown to other players)</label>
+        <input id="username" type="text" autocomplete="nickname" spellcheck="false" placeholder="UP TO 12 LETTERS">
+      </div>
       <!-- a site with its own disc (port/web/host), opened by its private link (?disc=KEY): main.js -->
       <!-- a device that hasn't opened the invite link yet: its access code (the link's disc=), once -->
       <div class="field-row-stacked access" id="accessRow" hidden>

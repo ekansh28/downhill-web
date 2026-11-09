@@ -232,6 +232,8 @@ int net_racing(void)
     return inited && client.racing;
 }
 
+int net_voice_open(void) { return inited && client_voice_open(&client); }
+
 int net_local_slot(void)
 {
     return client.lobby.local_slot;
