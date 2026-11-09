@@ -1,13 +1,13 @@
-// The browser's online client (www/net.js over build/web/dhd_net.wasm, finding 138) in Node, which
+// The browser's online client (www/net.js over build/web/dhd_net.wasm, finding 190) in Node, which
 // has the browser's WebSocket and fetch: two players against a relay (by default a local
 // `wrangler dev` in online/server), the way the game drives net.js. The host creates a room, the
 // guest joins it by its code, both ready, the host starts, and each sends a STATE frame the other
 // must receive; then the public list is read and both leave. In the room the guest says a chat line
 // both must get. In the race the host's microphone (the page's ring, here a 440 Hz tone, open mic)
 // must be heard in the guest's mix, and the guest must see the host's slot talking (voice chat,
-// finding 131: EVENT_VOICE frames, which any server relays).
+// finding 183: EVENT_VOICE frames, which any server relays).
 //
-// The sockets and voice chat are the net worker's (www/net_worker.js, finding 144), here in Node's
+// The sockets and voice chat are the net worker's (www/net_worker.js, finding 196), here in Node's
 // worker_threads; a third thread plays the page's worklets in real time (the host's microphone, the
 // guest's dhd-voice ring). This thread is the game worker: it stalls (a busy loop, as a long field)
 // in the room and in the race, and the server's pings must still be answered, a stalled race kept
@@ -85,7 +85,7 @@ if (guest.net.host_service_net_join_room(guest.put(room.code)) !== 0) fail('join
 await until('the guest in the room', () => guest.lobby().state === 2 && guest.lobby().members === 2);
 await until('the host sees two', () => host.lobby().members === 2);
 console.log('both in the room: 2 members');
-// Chat (finding 139): a line from the guest reaches both, the sender too, as net.h's NetChat
+// Chat (finding 191): a line from the guest reaches both, the sender too, as net.h's NetChat
 // (u32 seq, i32 count, then lines of u32 seq, i32 memberId, name[32], text[128], f64 at).
 const chatAt = 0xA000, readChat = p => { p.net.host_service_net_get_chat(chatAt); const dv = new DataView(p.ram.buffer), n = dv.getInt32(chatAt + 4, true);
   const text = at => new TextDecoder().decode(p.ram.subarray(at, p.ram.indexOf(0, at)));

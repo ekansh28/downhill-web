@@ -234,7 +234,7 @@ and the pictures are as in the one-worker runs.
 
 **What is left.**
 - (Done in finding 090 SP4, with VIF1/VU1 as a module of its own rather than the reactor twice;
-  finding 145 checks it and measures what limits the race since.) VU1 and the GS front end still
+  finding 197 checks it and measures what limits the race since.) VU1 and the GS front end still
   share one worker; natively they are two threads. Splitting them
   needs the reactor twice on one memory, which means a threads build of the reactor (wasi-libc's
   `wasm32-wasip1-threads`: a stack and TLS per instance, a locked malloc, passive data segments)

@@ -1,4 +1,4 @@
-// The game worker and the net worker (finding 144: net.js, net_worker.js) talk through
+// The game worker and the net worker (finding 196: net.js, net_worker.js) talk through
 // SharedArrayBuffers, never through messages, because the game worker reads its messages only at
 // vsync.
 //

@@ -1,4 +1,7 @@
-# 137: The browser's disc check is the native game's, in wasm
+# 189: The browser's disc check is the native game's, in wasm
+
+Status: current
+Checked: 2026-11-09
 
 ## Why
 

@@ -1,4 +1,4 @@
-// Online in the browser (findings 138, 144): the native game's lobby client (port/net: client.c,
+// Online in the browser (findings 190, 196): the native game's lobby client (port/net: client.c,
 // json.c, net.c), built for the worker as build/dhd_net.wasm with its own memory
 // (port/web/build_net.py), over the net worker's WebSocket (net_worker.js) in place of ws.h's Rust
 // client. The game's host_service_net_* services arrive here with the game's addresses; each copies
@@ -13,7 +13,7 @@
 // pong read late is still the real round trip and a stall is not a silent server. The net worker
 // answers the server's pings itself and keeps a stalled race heard (net_worker.js).
 //
-// Voice chat (finding 131) is the net worker's too (dhd_voice.wasm): the others' voices are
+// Voice chat (finding 183) is the net worker's too (dhd_voice.wasm): the others' voices are
 // decoded there and played by the page's dhd-voice worklet (audio.js), the page's microphone ring
 // (audio.js dhd-mic) is encoded there. The game's host_service_voice_* place and mute the slots in
 // the shared words, hand it frames and drops through the ring, and read its state from the shared
@@ -164,7 +164,7 @@ export async function createNet(bytes, guest, say, host = {}) {
   const muted = new Int8Array(SLOTS);
 
   const services = {
-    // Online is offered in this browser build (upstream turns it off there, finding 143): net.c says 1.
+    // Online is offered in this browser build (upstream turns it off there, finding 195): net.c says 1.
     host_service_net_offered: () => x.host_service_net_offered(),
     host_service_net_init: (a, b, c, d) => {
       base = a ? dec.decode(guest.bytes(a, guest.strlen(a))).replace(/\/+$/, '') : '';

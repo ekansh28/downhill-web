@@ -1,4 +1,7 @@
-# 132: staying ready when the host changes the track
+# 184: staying ready when the host changes the track
+
+Status: current
+Checked: 2026-11-09
 
 A ready player had to press ready again every time the host picked another track or lap count:
 the server clears every member's ready flag on such a change (`room.ts`, the `settings` message:

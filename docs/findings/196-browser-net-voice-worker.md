@@ -1,6 +1,9 @@
-# 144: The browser's sockets and voice chat in a worker of their own
+# 196: The browser's sockets and voice chat in a worker of their own
 
-In the browser the online client (finding 138) and voice chat (finding 131) ran in the game
+Status: current
+Checked: 2026-11-09
+
+In the browser the online client (finding 190) and voice chat (finding 183) ran in the game
 worker, which lets the browser in only at vsync. So everything the network did waited for the next
 field:
 

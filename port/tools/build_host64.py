@@ -300,7 +300,7 @@ def main():
     try:
         # SDL3 and the Rust library first: their checks are quick to fail, the module's C is not
         sdl_lib, sdl_include, sdl_libs = sdl(t, a)
-        # libopus, the voice chat's codec (port/tools/opus.py, finding 131): win-x64 for now; other
+        # libopus, the voice chat's codec (port/tools/opus.py, finding 183): win-x64 for now; other
         # targets build port/host/voice.c without it (no voice)
         opus_lib = opus_include = None
         if t.windows:

@@ -34,7 +34,7 @@ struct App {
     starting: AtomicBool,
     /// The newest online check of the disc image (check_disc): an older one still hashing stops.
     disc_check: AtomicU64,
-    /// The room a link (command line or the dhd:// scheme) asked to join (finding 128): passed to
+    /// The room a link (command line or the dhd:// scheme) asked to join (finding 181): passed to
     /// the game in DHD_NET_ROOM at the next PLAY, then taken so it joins it once.
     join: Mutex<Option<String>>,
 }
@@ -571,7 +571,7 @@ fn main() {
     update::clean_up(&place);
     let _ = dhd_settings::create(&place.settings());
     /* A link on the command line (or passed by the registered dhd:// scheme on Windows) names a
-       room to join: the game gets its code in DHD_NET_ROOM when PLAY starts it (finding 128). */
+       room to join: the game gets its code in DHD_NET_ROOM when PLAY starts it (finding 181). */
     let join_code = join::code_from_args(std::env::args());
     let place = if std::env::args().skip(1).any(|a| a == "--play") {
         match play_at_once(place) {
@@ -598,7 +598,7 @@ fn main() {
         .setup(|_app| {
             #[cfg(unix)]
             quit_signals::install(_app.handle().clone());
-            /* Register dhd:// so a shared scheme link opens this launcher (finding 128). Best
+            /* Register dhd:// so a shared scheme link opens this launcher (finding 181). Best
                effort and off the main thread; macOS and Linux need the packaging to declare it. */
             #[cfg(windows)]
             {

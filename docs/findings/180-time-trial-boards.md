@@ -1,4 +1,7 @@
-# 127: Time-trial leaderboards and ghosts on the online server
+# 180: Time-trial leaderboards and ghosts on the online server
+
+Status: current
+Checked: 2026-11-09
 
 Branch `server-rejoin`, 2026-10-31. Server only: `online/server/src/times.ts` (new),
 `src/index.ts`, `wrangler.jsonc`, `test/times.test.ts` (new). Protocol: `docs/online-protocol.md`,
@@ -44,7 +47,7 @@ small.
 - `isoSha256`: 64 lowercase hex, as hello. Stored, not compared: the server does not know the
   USA disc's hash (as for rooms, `README.md`).
 - **Name**: hello's rule (1-24 UTF-16 units after trimming) and no control characters, since a
-  board shows it to everyone (the chat's character class, finding 139).
+  board shows it to everyone (the chat's character class, finding 191).
 - **Time**: a whole number of ms from 10 s to 30 min (`MIN_TIME_MS`, `MAX_TIME_MS`): no run is
   that short, nobody posts one that long.
 - **Ghost**: standard base64, at most 128 KiB decoded (`MAX_GHOST_BYTES`, 413 `too_large`); the

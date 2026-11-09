@@ -1,4 +1,4 @@
-/* Voice chat (finding 131, port/host/voice.c): the host's microphone, encoder, decoders and mix.
+/* Voice chat (finding 183, port/host/voice.c): the host's microphone, encoder, decoders and mix.
    The game's side (who hears whom, how loud, where) is port/hle/online.c's. */
 #ifndef DHD_VOICE_H
 #define DHD_VOICE_H

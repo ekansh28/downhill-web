@@ -1,10 +1,10 @@
-"""The browser's online modules (findings 138, 144), wasm32 reactors with their own memories:
+"""The browser's online modules (findings 190, 196), wasm32 reactors with their own memories:
 
 - build/web/dhd_net.wasm, port/net's lobby client (client.c, json.c, join.c, net.c), the C the
   native game links. It runs in the game worker (www/net.js), so the game's host_service_net_*
   stay synchronous calls.
 - build/web/dhd_voice.wasm, voice chat: port/host/voice.c and libopus (port/tools/opus.py
-  wasm_objects; finding 131). It runs in the net worker (www/net_worker.js) beside the WebSocket,
+  wasm_objects; finding 183). It runs in the net worker (www/net_worker.js) beside the WebSocket,
   in real time whatever the game worker is doing.
 
     python port/web/build_net.py

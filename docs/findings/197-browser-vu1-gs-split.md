@@ -1,4 +1,7 @@
-# 145: the browser's VU1 and GS workers: already split; what limits the race now
+# 197: the browser's VU1 and GS workers: already split; what limits the race now
+
+Status: current
+Checked: 2026-11-09
 
 2026-11-09, branch `web/vusplit` (from 513ca8f, web/self-host merged up to b0e33e7). Browser only.
 

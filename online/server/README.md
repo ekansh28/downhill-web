@@ -12,7 +12,7 @@ is `docs/ONLINE-PLAN.md`.
 | `src/sfu.ts` | The Realtime SFU control plane (sessions, DataChannels) the room drives (finding 158). |
 | `src/lobbies.ts` | `LobbyIndex` Durable Object (a single global one): the public lobby list. |
 | `src/protocol.ts` | Constants, join codes, the version gate. |
-| `src/times.ts` | `TrackTimes` Durable Object, one per track and lap count: time-trial boards and ghosts (`/v1/times`, `/v1/ghost`, finding 127). |
+| `src/times.ts` | `TrackTimes` Durable Object, one per track and lap count: time-trial boards and ghosts (`/v1/times`, `/v1/ghost`, finding 180). |
 | `src/guard.ts` | The abuse guard (finding 161): kill switch, limits per address, caps per member, bans, the moderation log. |
 | `migrations/` | The moderation store's tables (D1). |
 | `tools/moderate.mjs` | The operator's moderation tool: the log, bans (through `wrangler d1 execute`). |
@@ -190,7 +190,7 @@ removing a class later needs a new migration entry, not an edit of `v1`.
 - No authentication: the game is open source, so any client can connect. The abuse guard
   (finding 161) limits what one can do: limits per address (`ratelimits` in `wrangler.jsonc`),
   the kill switch, per-player caps in a room, and bans.
-- Time-trial times are not verified: anyone can post a plausible fake (finding 127 says what
+- Time-trial times are not verified: anyone can post a plausible fake (finding 180 says what
   checking them would take).
 - The server does not check the ISO hash against the known US ISO; the client must refuse
   other regions, and the server only makes everyone match the host.

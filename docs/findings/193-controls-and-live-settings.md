@@ -1,4 +1,7 @@
-# 141: Rebindable controls, settings that apply at once, touch regions
+# 193: Rebindable controls, settings that apply at once, touch regions
+
+Status: partly superseded by 157 (the rebinding: controls.c and the CONTROLS hub gave way to upstream's CONTROLS screen; the live settings stay)
+Checked: 2026-11-09
 
 Three pieces of work from the controls-remap and settings-live branches, merged into the
 port-improvements line. Their code cited "finding 124", a number upstream has since used (the PERU
@@ -30,7 +33,7 @@ VU1 loop), so they are written up here.
 - Vibration: turning it on buzzes player 1's pad (`pad_preview.h`). The game sends motor values
   every field, zeros included, so the preview wins over them for a moment, then the game's apply
   again; turning it off stops at once.
-- Widescreen and the voice rows apply at once too (STATE.md, 2026-11-01; finding 131). Every row
+- Widescreen and the voice rows apply at once too (STATE.md, 2026-11-01; finding 183). Every row
   that decides the widescreen shape (Widescreen, Display, Window Size and Picture, whose
   `DHD_ASPECT` ratio `wanted_aspect` reads) runs `port_widescreen_apply` and then presents again
   (`pc_settings.c` `widescreen_apply`). On the native PC builds the renderer takes the shape from

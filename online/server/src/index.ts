@@ -1,5 +1,5 @@
 // Worker entry: routes lobby-list requests to the LobbyIndex, WebSockets to a Room by code, the
-// time-trial boards (finding 127) to a TrackTimes per track, and the leaderboards' read/submit
+// time-trial boards (finding 180) to a TrackTimes per track, and the leaderboards' read/submit
 // endpoints to a single global Leaderboard object.
 import { PROTOCOL, isByte, isU32, minVersionOf, randomCode } from "./protocol";
 import { DEFAULT_LIMIT, MAX_BODY_BYTES, MAX_LIMIT, type PostResult, boardKey, checkPost } from "./times";

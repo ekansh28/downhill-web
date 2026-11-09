@@ -1,4 +1,4 @@
-/* Track bar names (finding 129).
+/* Track bar names (finding 182).
  *
  * The race-progress "track bar" is a 3D object placed in front of the camera: one small dot per
  * rider, each moved along the bar by func_00179338 (which also stores the rider's 0..1 progress
@@ -75,7 +75,7 @@ void hle_trackbar(void *hud_ptr)
     int nriders = EE32(0x2AF2C0 + 0x501A8);            /* riders in the race */
     if (nriders <= 0 || nriders > TB_RIDERS) nriders = TB_RIDERS;
 
-    /* DHD_TB_DUMP: the handles, owners and markers, every 600th call (finding 129: to find the
+    /* DHD_TB_DUMP: the handles, owners and markers, every 600th call (finding 182: to find the
        dot's colour); read through the cache, not looked up on every call of this per-field hook */
     static HleEnv dump_env;
     static int calls;

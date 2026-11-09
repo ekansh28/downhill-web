@@ -1,4 +1,4 @@
-"""Voice chat (finding 131): port/host/voice.c with the real libopus (port/tools/opus.py) and SDL3
+"""Voice chat (finding 183): port/host/voice.c with the real libopus (port/tools/opus.py) and SDL3
 (port/tools/sdl3.py) -- a tone encoded, received as voice frames, reordered, concealed, decoded and
 mixed; gain, pan and mute; eight talkers; malformed, oversized and flooding frames; and the
 proximity rules (port/hle/voice_rules.h). No microphone, network or game: host_service_voice_*

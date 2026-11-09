@@ -122,7 +122,7 @@ class Ring extends AudioWorkletProcessor {
 }
 registerProcessor('dhd-ring', Ring);
 
-// Voice chat's microphone (main.js, finding 131): its first channel, 48 kHz (the context's rate),
+// Voice chat's microphone (main.js, finding 183): its first channel, 48 kHz (the context's rate),
 // into the net worker's ring as 16-bit samples: header [write, read] in samples, then the samples. A
 // full ring drops what doesn't fit (the net worker reads every 10 ms).
 class Mic extends AudioWorkletProcessor {
@@ -147,7 +147,7 @@ class Mic extends AudioWorkletProcessor {
 }
 registerProcessor('dhd-mic', Mic);
 
-// Voice chat's others (finding 144): the net worker (net_worker.js) mixes their voices, placed and
+// Voice chat's others (finding 196): the net worker (net_worker.js) mixes their voices, placed and
 // panned as the game asks, into this ring 50 ms ahead of what is played: header [write, read, runs
 // dry, -] as running frame counts, then 48 kHz stereo 16-bit samples (net_ring.js). Played as it
 // comes, in real time, beside the game's sound and never through the game worker; after a run dry

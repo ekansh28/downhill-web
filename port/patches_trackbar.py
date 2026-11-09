@@ -1,4 +1,4 @@
-"""Track bar names (finding 129): after the HUD has moved each rider's dot along the track bar
+"""Track bar names (finding 182): after the HUD has moved each rider's dot along the track bar
 (func_00179338), port/hle/trackbar.c draws a name tag right of each player's dot."""
 
 

@@ -144,7 +144,7 @@ async function start(m) {
   if (m.lowEnd && settings.fresh && env.DHD_SCALE === undefined && settings.save('scale', '1')) {
     env.DHD_SCALE = '1'; say('settings: 1x resolution to start on this device (SETTINGS > Resolution changes it)'); }
   // The client reaches the game's memory through these: an address is folded as span() folds it.
-  // Its sockets and voice chat are the net worker's (findings 131, 144): voice's settings live, the
+  // Its sockets and voice chat are the net worker's (findings 183, 196): voice's settings live, the
   // page's keys for push-to-talk (a text field open holds them: net.textInput), the page's
   // microphone and voice rings (main.js), and the page told when the game wants the microphone.
   const net = await createNet(netBytes, { bytes: (a, n) => span(a, n), strlen: a => { if (bytes.buffer !== memory.buffer) refresh();

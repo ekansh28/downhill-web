@@ -1,4 +1,4 @@
-/* Voice chat's who-hears-whom (finding 131): the rules port/hle/online.c applies each frame, here
+/* Voice chat's who-hears-whom (finding 183): the rules port/hle/online.c applies each frame, here
    on their own so port/host/test_voice.c checks the very code the game runs. Distances are the
    game's world units (about VOICE_UNITS_PER_METRE a metre: a rider at 38 mph moves about 91 a
    second, measured against the HUD's speedometer). */

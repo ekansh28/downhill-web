@@ -133,7 +133,7 @@ int net_ping_ms(void);                             /* in a room, else -1 */
    median, ms; what the puppets are predicted across), else -1 (finding 169). */
 int net_riders_ms(void);
 
-/* ---- text chat (finding 139) ----
+/* ---- text chat (finding 191) ----
    Anyone in the room or a race says a line (1-120 characters once the server has cleaned it; 5
    in 10 s); everyone gets it, the sender too. The client keeps the last NET_CHAT_LINES, oldest
    first, and adds the server's slow_down refusal as a line of its own (member_id -1). Nothing is

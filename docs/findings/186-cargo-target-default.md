@@ -1,4 +1,7 @@
-# 134: rustgs.py's cargo target folder without DHD_CARGO_DIR
+# 186: rustgs.py's cargo target folder without DHD_CARGO_DIR
+
+Status: current
+Checked: 2026-11-09
 
 BUILDING.md says cargo's output goes under `DHD_DEVCACHES/dhd-cargo`. On Windows, `rustgs.py`
 spelled that default as the literal string `'DHD_DEVCACHES/dhd-cargo'`, not the variable's value.
@@ -12,10 +15,10 @@ Every other tool reads `os.environ.get('DHD_DEVCACHES') or ~/DevCaches` (`build_
   there and refused: `dep-info DHD_DEVCACHES\dhd-cargo\...\dhd_render.d is missing`.
 
 The build only worked where `DHD_CARGO_DIR` was set. Seen on a fresh Windows setup (2026-10-30;
-`DHD_DEVCACHES=D:\DevCaches`, no `DHD_CARGO_DIR`). The default is now
+`DHD_DEVCACHES` set to a DevCaches folder, no `DHD_CARGO_DIR`). The default is now
 `Path(DHD_DEVCACHES or ~/DevCaches) / 'dhd-cargo'`, as documented. With it, a cold
 `rustgs.py build --target x86_64-pc-windows-msvc` built `dhd_render.lib` into
-`D:\DevCaches\dhd-cargo\31c0788d\` and passed `check_rust_lib`.
+`<DHD_DEVCACHES>/dhd-cargo/31c0788d/` and passed `check_rust_lib`.
 
 A library built into the worktree folder (before the fix) can't be moved into the cache and
 reused: `check_rust_lib` rightly refuses the worktree path compiled into its objects. Delete it

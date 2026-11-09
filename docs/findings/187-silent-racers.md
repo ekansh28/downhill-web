@@ -1,4 +1,7 @@
-# 135: The server drops a racer who goes silent; host handover mid-race is tested
+# 187: The server drops a racer who goes silent; host handover mid-race is tested
+
+Status: current
+Checked: 2026-11-09
 
 ## A connection that dies without closing
 

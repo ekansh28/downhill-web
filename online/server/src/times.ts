@@ -1,4 +1,4 @@
-// Time-trial leaderboards and ghosts (finding 127): one TrackTimes Durable Object per track and lap
+// Time-trial leaderboards and ghosts (finding 180): one TrackTimes Durable Object per track and lap
 // count, SQLite-backed. The Worker (index.ts) validates requests with checkPost and routes them here.
 // Times are NOT verified: anyone who can send an HTTP request can post any plausible time.
 import { DurableObject } from "cloudflare:workers";

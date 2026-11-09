@@ -1,4 +1,7 @@
-# 129: names beside the track bar's dots
+# 182: names beside the track bar's dots
+
+Status: current
+Checked: 2026-11-09
 
 Work in progress on `trackbar-names`. The race-progress "track bar" is a 3D HUD object placed in
 front of the camera (finding 056), with one small dot per rider that `func_00179338`

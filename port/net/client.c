@@ -652,7 +652,7 @@ void (*net_voice_hook)(int slot, const uint8_t *payload, int n);
 
 void client_on_binary(NetClient *c, const uint8_t *data, size_t n)
 {
-    /* voice chat (finding 131): straight to its hook, not through the frame queue */
+    /* voice chat (finding 183): straight to its hook, not through the frame queue */
     if (net_voice_hook && n >= 4 && n <= NET_FRAME_MAX && data[0] == NET_FRAME_EVENT && data[2] == NET_VOICE_VERSION &&
         data[3] == NET_VOICE_KIND) {
         int racing;

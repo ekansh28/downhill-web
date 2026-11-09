@@ -1,4 +1,7 @@
-# 142: A self-hosted browser site, a streamed disc and builds on C:
+# 194: A self-hosted browser site, a streamed disc and builds on C:
+
+Status: current
+Checked: 2026-11-09
 
 2026-11-08. `port/web/host/` (README there), `www/disc_remote.js`, `www/disc_store.js`,
 `port/tools/drives.py`.
@@ -12,7 +15,7 @@ test hook reads `/test-iso`:
 - **Slow.** `r2.dev` URLs are rate-limited and meant for development. Every 1 MiB block missed by
   the 48-block memory cache was a synchronous request from the game worker, so the menus and races
   stopped while the music and the level files streamed. Nothing was kept between sessions.
-- **ONLINE: "the disc image couldn't be read".** The online check (finding 137) hashes every game
+- **ONLINE: "the disc image couldn't be read".** The online check (finding 189) hashes every game
   file on the disc: about 2.4 GB of synchronous Range requests to those URLs. Some fail, and a
   failed read is code -1.
 - **Not private.** Anyone with an `r2.dev` URL can download the image.

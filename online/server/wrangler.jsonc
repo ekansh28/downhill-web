@@ -36,7 +36,7 @@
     "bindings": [
       { "name": "ROOM", "class_name": "Room" },
       { "name": "LOBBIES", "class_name": "LobbyIndex" },
-      // Time-trial boards and ghosts, one per track and lap count (src/times.ts, finding 127).
+      // Time-trial boards and ghosts, one per track and lap count (src/times.ts, finding 180).
       { "name": "TIMES", "class_name": "TrackTimes" },
       // The leaderboards (src/leaderboard.ts).
       { "name": "LEADERBOARDS", "class_name": "Leaderboard" }

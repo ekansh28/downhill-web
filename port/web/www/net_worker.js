@@ -1,4 +1,4 @@
-// The net worker (finding 144): the online game's WebSocket and voice chat, in a worker of their
+// The net worker (finding 196): the online game's WebSocket and voice chat, in a worker of their
 // own, so neither waits for the game worker, which lets the browser in only at vsync (and not at
 // all through a long field or a stall).
 //
@@ -20,7 +20,7 @@
 //   silent racer (room.ts RACE_SILENT_MS); its pong reaches the client as any other, a true round
 //   trip on the game's clock.
 //
-// Voice chat (finding 131; port/host/voice.c with libopus, dhd_voice.wasm) runs here too. Its
+// Voice chat (finding 183; port/host/voice.c with libopus, dhd_voice.wasm) runs here too. Its
 // packets come straight from the socket (while the game races, as client.c's net_voice_hook);
 // every TICK_MS the others' voices are mixed, at the gain and pan the game last gave each slot
 // (the shared words), into the page's voice ring up to VOICE_AHEAD_MS ahead, which audio.js's

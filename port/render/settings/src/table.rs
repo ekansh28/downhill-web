@@ -122,7 +122,7 @@ pub const SETTINGS: &[Setting] = &[
                                c("240", "240 fps"), c("monitor", "Monitor")], "60", "60"),
     switch("vsync", "DHD_VSYNC", SWITCH, "1", "0"),
     switch("perf_counter", "DHD_PERF_COUNTER", SWITCH, "0", "0"),
-    // Voice chat in a race (port/host/voice.c, port/hle/online.c, finding 131): on or off; push to
+    // Voice chat in a race (port/host/voice.c, port/hle/online.c, finding 183): on or off; push to
     // talk (voice_key held, a letter) or an open microphone; the others' level and this
     // microphone's; the hearing range in metres; the bitrate in bits a second; the microphone
     // (empty: the system's default; else the first recording device whose name holds it).
@@ -179,7 +179,7 @@ pub const SETTINGS: &[Setting] = &[
     // Discord Rich Presence (port/render/presence): the game shows what is played on the player's
     // Discord profile. Off without dhd.ini, so the tools' runs never reach the PC's Discord.
     switch("discord", "DHD_DISCORD", TOGGLE, "on", "off"),
-    // The rebindable controls (finding 141). `controls` names the active profile (empty: the
+    // The rebindable controls (finding 193). `controls` names the active profile (empty: the
     // default one); its bindings live under `bindings` (default profile) or `bindings_<name>`,
     // whose text port/hle/controls.c reads. The rest are the Android on-screen controls.
     text("controls", "DHD_CONTROLS"),

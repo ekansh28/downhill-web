@@ -1,4 +1,4 @@
-// A disc image streamed from this site (port/web/host, finding 142), read as the game reads a local
+// A disc image streamed from this site (port/web/host, finding 194), read as the game reads a local
 // one: synchronously, in the game worker. A few blocks are kept in memory here; the rest comes from
 // disc_store.js, which keeps this browser's copy of the whole image (downloaded in the background
 // while the game runs, so after the first sessions nothing waits on the network) and downloads a

@@ -203,6 +203,25 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 177 | [one Realtime session per member per room, set up before the race](177-sfu-room-sessions.md) | current |  |
 | 178 | [pre-release online lifecycle review](178-pre-0713-review.md) | partly superseded | [179](179-sfu-review-risks.md) for the three risks left open, now fixed |
 | 179 | [the three SFU risks the pre-release review left open](179-sfu-review-risks.md) | current |  |
+| 180 | [Time-trial leaderboards and ghosts on the online server](180-time-trial-boards.md) | current |  |
+| 181 | [Quick Race; joining a room from a link](181-quick-race-and-links.md) | current |  |
+| 182 | [names beside the track bar's dots](182-trackbar-names.md) | current |  |
+| 183 | [voice chat in a race, with no server change](183-voice-chat.md) | current |  |
+| 184 | [staying ready when the host changes the track](184-keep-ready.md) | current |  |
+| 185 | [The server's `start` needs two members; a test that lost its frame](185-start-needs-two.md) | current |  |
+| 186 | [rustgs.py's cargo target folder without DHD_CARGO_DIR](186-cargo-target-default.md) | current |  |
+| 187 | [The server drops a racer who goes silent; host handover mid-race is tested](187-silent-racers.md) | current |  |
+| 188 | [Discord Rich Presence: rooms with their size, the rider, TRY AGAIN, the Social SDK](188-discord-presence-rooms.md) | current |  |
+| 189 | [The browser's disc check is the native game's, in wasm](189-browser-disc-check.md) | current |  |
+| 190 | [Online in the browser](190-browser-online.md) | current |  |
+| 191 | [Text chat in the race room and the race; name tags](191-text-chat.md) | current |  |
+| 192 | [Rejoin after a drop: the lobby slot and the race slot](192-online-rejoin.md) | superseded | [175](175-online-followups.md) |
+| 193 | [Rebindable controls, settings that apply at once, touch regions](193-controls-and-live-settings.md) | partly superseded | [157](157-control-rebinding.md) for the rebinding: controls.c and the CONTROLS hub gave way to upstream's CONTROLS screen; the live settings stay |
+| 194 | [A self-hosted browser site, a streamed disc and builds on C:](194-self-hosted-browser-site.md) | current |  |
+| 195 | [browser deferred vsync and display pacing: not kept](195-browser-vsync-pacing.md) | current |  |
+| 196 | [The browser's sockets and voice chat in a worker of their own](196-browser-net-voice-worker.md) | current |  |
+| 197 | [the browser's VU1 and GS workers: already split; what limits the race now](197-browser-vu1-gs-split.md) | current |  |
+| 198 | [the browser's VU1 already runs entirely in AOT blocks and native kernels](198-browser-vu1-coverage.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

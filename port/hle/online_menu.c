@@ -57,7 +57,7 @@ static int arena(int track) { return track == 23; }
 static const char code_letters[] = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";  /* the server's join codes */
 static const char name_letters[] = SETTING_NAME_LETTERS;
 
-/* ---- text chat's shared pieces (finding 139; the room here, the race in online.c) ----
+/* ---- text chat's shared pieces (finding 191; the room here, the race in online.c) ----
    What can be typed, and shown: the game's font draws its button glyphs for bytes 0x80 and up,
    so a line from the server (UTF-8, any case) is shown in capitals, as the game's own text is,
    and a character outside these as '?'. */
@@ -111,7 +111,7 @@ static int in_shell, room_pending, hold_rider, resume_home;
 static int shop_done;
 /* connecting: Create or Join was chosen; the page waits for the server's room (connect_poll). */
 static int connecting;
-/* A friend's join from Discord (finding 136): the SDK's callback leaves the room's code in
+/* A friend's join from Discord (finding 188): the SDK's callback leaves the room's code in
    dhd_presence; the title takes it once (take_join) into join_code, and ONLINE joins it as JOIN
    WITH A CODE does. Empty when none waits. */
 static char join_code[CODE_LENGTH + 1];
@@ -272,10 +272,10 @@ static const char *server(void)
 /* The official public race server (port/render/settings' table's built-in value). A join code means
    something only on the server that made it, and the presence names no server (it must not), so a
    code is taken only on the official one -- otherwise the player would only get "no such room"
-   (finding 136, point 3). */
+   (finding 188, point 3). */
 static const char official_server[] = "wss://dhd.skuza.app";
 
-/* A friend's join from Discord, taken once (finding 136): the room's code into join_code; 1 when one
+/* A friend's join from Discord, taken once (finding 188): the room's code into join_code; 1 when one
    was waiting. dhd_presence has one only through the Social SDK (the plain IPC cannot receive a join)
    and only for a public room with a free place; the crate already checks the code's letters. */
 static int take_join(void)
@@ -471,7 +471,7 @@ static void room_open(void);
 static void enter_room(int create, const char *code);
 static void start_list(void);
 
-/* ---- DHD_NET_ROOM=CODE (finding 128): a link's or a launcher's room ----
+/* ---- DHD_NET_ROOM=CODE (finding 181): a link's or a launcher's room ----
    Read once at the start. The main menu opens ONLINE by itself (port_online_resume) and ONLINE
    joins that room as soon as the disc's check allows. (DHD_NET_JOIN is the tools' scripted
    flow in online.c, which skips the menus: a different thing.) */
@@ -779,7 +779,7 @@ static int raced_track = -1;                  /* the track this PC's race was on
 static char raced_code[8];                    /* back from it, a change made meanwhile is news */
 static char seen_event[32];                   /* the server's last notice seen (start_cancelled) */
 static char title_text[32], footer_text[96];
-/* The room's chat (finding 139): L1 or Y opens it over the room; typing goes to its line (Enter
+/* The room's chat (finding 191): L1 or Y opens it over the room; typing goes to its line (Enter
    says it, Esc closes), and a pad says one of the quick lines (left/right, Cross). Closed, a line
    from someone else shows as a note at the top, and the CHAT tag counts what is unread. */
 enum { CHAT_ROWS = 9, CHAT_ROW_TEXT = 80, CHAT_KEY = 'Y' };
@@ -834,7 +834,7 @@ static RoomNow room_now(void)
         if (r.racing) r.own_race = m->race_state;
     }
     /* the host starts the next race with whoever is ready (the others wait here); the server
-       refuses a start while a slot is held (finding 140), so the button says so too */
+       refuses a start while a slot is held (finding 192), so the button says so too */
     r.can_start = r.host && !r.racing && !r.starting && r.ready > 0 && !r.reconnecting;
     return r;
 }
@@ -1480,7 +1480,7 @@ static void draw_bar(const RoomNow *r)
     if (!r->host) draw_bar_cell(RF_START, 2, "HOST STARTS", NULL, r, 0);
     else if (r->racing) draw_bar_cell(RF_START, 2, "START", "RACE LIVE", r, 0);
     else if (r->starting) draw_bar_cell(RF_START, 2, "STARTING", NULL, r, 0);
-    else if (r->reconnecting) {  /* a held slot stops the start (finding 140) */
+    else if (r->reconnecting) {  /* a held slot stops the start (finding 192) */
         snprintf(why, sizeof why, "%d AWAY", r->reconnecting);
         draw_bar_cell(RF_START, 2, "START", why, r, 0);
     }
@@ -2201,7 +2201,7 @@ int port_online_menu(void)
     connecting = 0;
     join_read();
     if (join_state == 1) join_state = 2;  /* DHD_NET_ROOM, ONLINE chosen by hand first */
-    /* A friend's join from Discord (finding 136): port_online_resume took the code and opened this
+    /* A friend's join from Discord (finding 188): port_online_resume took the code and opened this
        page; join it as JOIN WITH A CODE does, with its own not_ready refusals. */
     if (join_code[0]) {
         char code[CODE_LENGTH + 1];
@@ -2220,7 +2220,7 @@ int port_online_resume(void)
 {
     void *animation = (void *)(uintptr_t)(0x08000000u + 0x4C6370);
     /* A link's room (DHD_NET_ROOM) opens ONLINE once the camera is back on the title, as a closed
-       room's return does. A friend's join from Discord (finding 136) opens it this frame (the patch
+       room's return does. A friend's join from Discord (finding 188) opens it this frame (the patch
        puts the cursor on the ONLINE row and confirms), where port_online_menu joins the code; a race
        or another page is not the main menu, so that join waits on the title until then. */
     join_read();

@@ -1,4 +1,4 @@
-/* Voice chat (finding 131): port/host/voice.c's receive, jitter, decode and mix with the real
+/* Voice chat (finding 183): port/host/voice.c's receive, jitter, decode and mix with the real
    libopus, and port/hle/voice_rules.h's proximity rules. Built and run by port/tools/test_voice.py.
    Each case prints PASS or FAIL and the program a final RESULT line. */
 #include "voice.h"

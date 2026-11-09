@@ -1,4 +1,7 @@
-# 143: browser deferred vsync and display pacing: not kept
+# 195: browser deferred vsync and display pacing: not kept
+
+Status: current
+Checked: 2026-11-09
 
 2026-11-09, branch `web/pacing` (44b2cc4, from f2d63d6). Browser only. Not merged; the branch
 stays as the reference for this finding.
@@ -30,7 +33,7 @@ Question: two ideas to make the threaded browser build's race faster or smoother
 
 ## Result
 
-- Deferred vsync: the same scheme was measured in finding 145 ("Tried: deferred vsync"). Race
+- Deferred vsync: the same scheme was measured in finding 197 ("Tried: deferred vsync"). Race
   state trace identical (`trace_columns.py` PASS, all 13 columns, VU counters equal), but no
   fields/s gain beyond the noise. The VU worker is busy about 90% of each field (VU1's
   `run_micro`), so letting the EE run ahead buys almost nothing.
@@ -49,5 +52,5 @@ Neither change is kept: one makes no difference, and the other cannot help until
   minute, the timer against `requestAnimationFrame`. 44b2cc4 has the code and the counters.
 - If deferred vsync is tried again then, the trace check above is the gate; with the VU worker no
   longer the limit, it may then pay.
-- `web/pacing`'s `run_headless.mjs` lobby stub duplicates the one merged with finding 145; keep
+- `web/pacing`'s `run_headless.mjs` lobby stub duplicates the one merged with finding 197; keep
   145's.

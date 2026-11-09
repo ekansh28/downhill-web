@@ -8,7 +8,7 @@
    Every change is saved to dhd.ini at once (host_setting_save keeps the other lines). Display,
    window size, picture shape, scaling, widescreen (port_widescreen_apply), skip movies (the
    startup movies), vibration, the sticks' dead zone, the button symbols, unlock all, FPS & Ping
-   and the voice chat's rows (Online tab, finding 131) apply at once; resolution, the texture pack, the font, the frame rate and V-Sync at the next start ("*" and
+   and the voice chat's rows (Online tab, finding 183) apply at once; resolution, the texture pack, the font, the frame rate and V-Sync at the next start ("*" and
    the row's hint, a line above the legend, say so). A setting the environment sets (DHD_*) is
    shown but can't be changed here.
    Nothing here writes game state: the page lives in host memory and the settings in dhd.ini,
@@ -88,7 +88,7 @@ static Row rows[ROWS] = {
     {"FPS & Ping:", "perf_counter", 1},
     {"Unlock All:", "unlock_all", 1},
     {"Player Names:", "names", 1},
-    /* voice chat (port/host/voice.c reads them each second, online.c the range: at once; finding 131) */
+    /* voice chat (port/host/voice.c reads them each second, online.c the range: at once; finding 183) */
     {"Voice Chat:", "voice", 1},
     {"Voice Mode:", "voice_mode", 1},
     {"Microphone:", "voice_device", 1},  /* the host's recording devices (host_service_voice_device) */

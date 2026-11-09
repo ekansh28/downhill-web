@@ -150,7 +150,7 @@ void host_service_gs_capture_request(uint32_t name);
 /* ---- sound output ---- */
 /* The mixer's output format: 48000 Hz, stereo, 16-bit PCM, interleaved. */
 #define HOST_SOUND_RATE 48000
-/* Voice chat (finding 131, port/host/voice.c; port/hle/online.c decides who hears whom): a voice
+/* Voice chat (finding 183, port/host/voice.c; port/hle/online.c decides who hears whom): a voice
    frame from a race slot (the EVENT payload, from its version byte; the slot the server stamped),
    where each slot is heard (gain and pan in thousandths, 0 gain not heard), a slot muted by this
    player, a slot's (or, -1, every slot's) waiting packets dropped, and the state for the HUD. */
@@ -242,7 +242,7 @@ double host_service_net_server_ms(void);
 int host_service_net_send_frame(int a0, uint32_t a1, uint32_t a2);
 int host_service_net_receive_frame(uint32_t a0, uint32_t a1);
 int host_service_net_list_lobbies(uint32_t a0, int a1);
-int host_service_net_send_chat(uint32_t text);  /* a chat line (finding 139): 1 sent */
+int host_service_net_send_chat(uint32_t text);  /* a chat line (finding 191): 1 sent */
 void host_service_net_get_chat(uint32_t out);   /* the last lines, a NetChat */
 
 /* ---- async host services: blocking work on a host thread (online_menu.c) ----
@@ -370,7 +370,7 @@ typedef struct {
     char track[24], room[8];
 } HostPresence;  /* 56 bytes */
 void host_service_presence(uint32_t state);
-/* A friend's join from Discord (the Social SDK, finding 136): the room's code, NUL-terminated, into
+/* A friend's join from Discord (the Social SDK, finding 188): the room's code, NUL-terminated, into
    `out` (a guest span of 8 bytes or more), taken -- at most once. 1 when there was one (see
    presence/src/lib.rs's `joined`). The browser and Android leave `out` and return 0. */
 int host_service_presence_join(uint32_t out);

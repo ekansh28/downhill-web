@@ -3,7 +3,7 @@
 // /v1/ routes and Durable Objects, unchanged), and optionally the owner's own disc image streamed
 // from R2 behind a private link. Deploy with port/web/host/deploy.mjs; README.md says how.
 //
-// The disc (finding 142): /disc/<KEY>/info answers the image's size, a version tag and the online
+// The disc (finding 194): /disc/<KEY>/info answers the image's size, a version tag and the online
 // check that disc_check.mjs worked out from the same image at deploy time (so a browser never has to
 // download the whole disc to hash it), and /disc/<KEY>/<TAG>/<N> is the image's 256 KiB block N,
 // immutable, so the browser's HTTP cache keeps it and the edge cache can too. KEY is the

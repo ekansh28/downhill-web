@@ -127,7 +127,7 @@ def host_tests():
     # the touch controls' rules: scaling, flick lanes, sprint and resume guards, the trick stick,
     # the pause rows' steps (finding 141)
     run('touch', [HLE / 'touch.c', HLE / 'test_touch.c'])
-    # voice chat (finding 131): voice.c with the real libopus, the jitter queue, mix and rules
+    # voice chat (finding 183): voice.c with the real libopus, the jitter queue, mix and rules
     if testprog.WINDOWS:
         import test_voice
         test_voice.main()

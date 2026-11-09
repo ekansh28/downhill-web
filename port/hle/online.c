@@ -281,10 +281,10 @@ extern void func_001B45F8(void *timer, int kind, int ticks);  /* the race-end co
 enum {
     EVENT_VERSION = 2, EVENT_HIT = 1, EVENT_LOADED = 2, EVENT_SETUP = 3, EVENT_START = 4, EVENT_GO = 5,
     EVENT_FINISH = 6, EVENT_RESULTS = 7, EVENT_PICKUP = 9,  /* 8 was 0.7.3's rematch (TRY AGAIN / NEW LEVEL in the race) */
-    /* 10: [length, text]: a race chat line (finding 139), so chat works on a server without a chat
+    /* 10: [length, text]: a race chat line (finding 191), so chat works on a server without a chat
        message; older clients drop it (puppet.c takes EVENT_HIT alone) */
     EVENT_CHAT = 10,
-    EVENT_VOICE = 11 /* [sequence 16 bits, Opus]: voice chat (finding 131, port/host/voice.c's VOICE_EVENT) */
+    EVENT_VOICE = 11 /* [sequence 16 bits, Opus]: voice chat (finding 183, port/host/voice.c's VOICE_EVENT) */
 };
 /* Snapshots: this PC's own rider every race tick (60 a second at any frame rate), the AI riders it
    runs every AI_SNAPSHOT_TICKS (30 a second; finding 169). */
@@ -1526,7 +1526,7 @@ void hle_online_names(void *rider, int view)
         int size = 100 - (int)((100 - NAME_SMALLEST) * far), alpha = (int)(128 * (1 - far));
         if (alpha < 8) continue;
         char label[48];
-        int talking = host_service_voice_state(VOICE_STATE_TALKING, global);  /* voice chat (finding 131) */
+        int talking = host_service_voice_state(VOICE_STATE_TALKING, global);  /* voice chat (finding 183) */
         snprintf(label, sizeof label, talking ? "%s - TALKING" : "%s", on.name[global]);
         int width = name_width * size / 100;
         func_0020FB80(0, width, width * 3 / 4, -width * 102 / 320, -width * 24 / 320);
@@ -1556,7 +1556,7 @@ const char *hle_online_slot_name(int slot)
     return on.name[global];
 }
 
-/* ---- text chat in the race (finding 139) ----
+/* ---- text chat in the race (finding 191) ----
    On the race screen Y opens a line to type (Enter says it, Esc closes; the controller keeps
    riding meanwhile, and text_input.c keeps the typed keys from the pad), and in the pause menu
    L1, R1, L2 and R2 say the quick lines (port_chat_presets) without a keyboard. The last lines
@@ -1757,7 +1757,7 @@ static void race_chat_draw(int view)
     func_0020F420(0, view);  /* pen 0's own colour again, for the HUD's text after this */
 }
 
-/* ---- voice chat (finding 131, port/host/voice.c) ----
+/* ---- voice chat (finding 183, port/host/voice.c) ----
    The host captures, encodes, sends, decodes and mixes; here each frame decides who is heard and
    how, from this PC's view of the race (the server relays a race's frames to all of it: it can't
    choose by distance, as it has no positions):

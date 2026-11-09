@@ -21,7 +21,7 @@ const DB = 'downhill-revived-settings', STORE = 'ini';
 // - RESTART, the footer of the others (Widescreen, Font, Frame Rate): the page loaded again.
 // - FPS_MAX: the browser's Frame Rate list and Monitor stop at 144 (the core's own cap is 240).
 export const BROWSER_PC_SETTINGS = {
-  // Voice chat's rows (finding 131): net.js's voice chat reads them again every second, so they apply at once.
+  // Voice chat's rows (finding 183): net.js's voice chat reads them again every second, so they apply at once.
   // Widescreen applies at once too (port/hle/widescreen.c port_widescreen_apply; the canvas has the monitor's shape).
   DHD_PC_SETTINGS_ROWS: 'DHD_SCALE,DHD_PRESENT_FILTER,DHD_WIDESCREEN,DHD_FONT,DHD_FPS,DHD_PERF_COUNTER,DHD_VOICE,DHD_VOICE_MODE,DHD_VOICE_DEVICE,DHD_VOICE_MIC,DHD_VOICE_VOLUME,DHD_VOICE_RANGE',
   DHD_PC_SETTINGS_LIVE: 'DHD_SCALE,DHD_WIDESCREEN,DHD_VOICE,DHD_VOICE_MODE,DHD_VOICE_DEVICE,DHD_VOICE_MIC,DHD_VOICE_VOLUME,DHD_VOICE_RANGE',

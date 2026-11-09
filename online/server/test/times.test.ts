@@ -30,7 +30,7 @@ const get = async (q: string) => {
   return { status: r.status, cors: r.headers.get("access-control-allow-origin"), body: await r.json<any>() };
 };
 
-describe("time-trial boards (finding 127)", () => {
+describe("time-trial boards (finding 180)", () => {
   it("keeps the best time per name, fastest first, with ranks", async () => {
     const from = ip();
     expect(await (await post(time(10, "Ann", 65_000), from)).json()).toMatchObject({ ok: true, rank: 1, best: true, timeMs: 65_000 });

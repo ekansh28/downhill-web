@@ -1,4 +1,4 @@
-// The streamed disc's store (disc_remote.js, finding 142): a worker of its own that keeps this
+// The streamed disc's store (disc_remote.js, finding 194): a worker of its own that keeps this
 // browser's copy of the site's disc image and hands the game worker its blocks.
 //
 // - The copy: <tag>.iso (sparse) and <tag>.map (one byte per block, 1 when stored) in the origin

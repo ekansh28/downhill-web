@@ -1,8 +1,11 @@
-# 146: the browser's VU1 already runs entirely in AOT blocks and native kernels
+# 198: the browser's VU1 already runs entirely in AOT blocks and native kernels
+
+Status: current
+Checked: 2026-11-09
 
 2026-11-09, branch `web/self-host` (7058d96; lane `web/vu1aot`, 8ba3f98). Browser only.
 
-Question: finding 145 found the VU worker is the browser race's limit, with 61.5% of its samples
+Question: finding 197 found the VU worker is the browser race's limit, with 61.5% of its samples
 in `run_micro`, which it read as the VU1 interpreter. Do the race's hot microprograms need more
 AOT blocks or native kernels (finding 090 OP3)?
 
@@ -26,8 +29,8 @@ block. The threaded build of 2026-11-09 (`build/web`, core of 01:18), headless:
 
 Every dispatch found its block: the interpreter ran no VU1 pair from boot to field 4300, the race
 included. `run()` is `always_inline` into `run_micro`, and the optimiser can inline block
-functions into it as well (finding 145 saw only ~4% under separate AOT block frames), so the
-blocks' own time shows up as `run_micro`. Finding 145's 61.5% is the AOT blocks and the run loop,
+functions into it as well (finding 197 saw only ~4% under separate AOT block frames), so the
+blocks' own time shows up as `run_micro`. Finding 197's 61.5% is the AOT blocks and the run loop,
 not interpretation (not split further here).
 
 The cheaper levers OP3 named are in the build already: kernels from 12E0 and for loops 0798 and

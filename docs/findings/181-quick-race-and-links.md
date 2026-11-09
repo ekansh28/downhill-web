@@ -1,4 +1,7 @@
-# 128: Quick Race; joining a room from a link
+# 181: Quick Race; joining a room from a link
+
+Status: current
+Checked: 2026-11-09
 
 ## Quick Race
 

@@ -39,10 +39,10 @@ const typed = new Int32Array(input, 448, 2 + 64);
 function type(c) { const w = Atomics.load(typed, 0); if (w - Atomics.load(typed, 1) >= 64) return;
   Atomics.store(typed, 2 + (w & 63), c); Atomics.store(typed, 0, w + 1); }
 const audio = new SharedArrayBuffer(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
-// Voice chat's microphone (finding 131): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
+// Voice chat's microphone (finding 183): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
 // then 1 s of samples; voice chat in the net worker (net_worker.js) reads it 20 ms at a time.
 const mic = new SharedArrayBuffer(8 + 48000 * 2);
-// The others' voices (finding 144): the net worker mixes them into this ring, audio.js's dhd-voice
+// The others' voices (finding 196): the net worker mixes them into this ring, audio.js's dhd-voice
 // plays it beside the game's sound (net_ring.js has its layout).
 const voice = voiceRingBuffer();
 let soundContext = null, micOpen = null;  // the page's AudioContext; the microphone while it is open
@@ -215,7 +215,7 @@ async function shape(env) {
 // A phone, a tablet or a small device: the game's first run there starts at 1x resolution (worker.js).
 const lowEnd = () => touch.likely() || (navigator.deviceMemory ?? 8) <= 4;
 const screenShape = () => { const s = (screen.width || 16) / (screen.height || 9); return Math.min(4, Math.max(4 / 3, s)); };
-// SETTINGS > Microphone (finding 131): the page's recording devices by name, for the game's list;
+// SETTINGS > Microphone (finding 183): the page's recording devices by name, for the game's list;
 // names come once the browser has allowed a microphone. A choice is found again by its name.
 async function micNames() {
   try { return (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.label && d.deviceId !== 'default')
@@ -351,7 +351,7 @@ addEventListener('drop', e => { e.preventDefault(); document.body.classList.remo
   if (running || !e.dataTransfer?.files.length) return;
   $('iso').files = e.dataTransfer.files; $('iso').onchange(); });
 $('start').onclick = () => start({ file: $('iso').files[0], env });
-// An invite (finding 128): index.html?room=K7M2QX opens ONLINE after Start and joins that room
+// An invite (finding 181): index.html?room=K7M2QX opens ONLINE after Start and joins that room
 // (DHD_NET_ROOM, port/hle/online_menu.c). The menu's "Copy invite link" makes such a link for the
 // room the player is in: a public room's code comes with the game's presence (worker.js), a
 // private room's only once the player has copied it in the room (Circle), as the game keeps it.
@@ -381,7 +381,7 @@ else if (room) addLog(`?room=${room}: not a join code (6 letters and digits)`);
 if (params.get('iso') === 'test') start({ isoUrl: '/test-iso', env: { DHD_SETTINGS: 'none', ...env } });
 else shape(env);
 
-// A self-hosted site (port/web/host, finding 142) says what it offers in site.json; elsewhere
+// A self-hosted site (port/web/host, finding 194) says what it offers in site.json; elsewhere
 // (serve.mjs, any static host) there is none and the page is as above.
 //   server: "same-origin": the site is its own online server, so the game connects there
 //           (?env.DHD_NET_SERVER still wins). No address is written anywhere: it is this page's.

@@ -1,4 +1,4 @@
-"""libopus for the PC build: the voice chat's codec (port/host/voice.c, finding 131).
+"""libopus for the PC build: the voice chat's codec (port/host/voice.c, finding 183).
 
     python port/tools/opus.py          prints the static library it built (or had built)
 
