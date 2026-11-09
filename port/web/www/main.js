@@ -369,7 +369,10 @@ function invite(code, inRoom = true) {
 }
 $('inviteFloat').onclick = () => $('invite').onclick();
 $('invite').onclick = () => {
-  const link = `${location.origin}${location.pathname}?room=${inviteCode}`;
+  // with this site's disc key when it has one (port/web/host): a friend new to the site plays at once
+  let disc = '';
+  try { disc = document.body.classList.contains('site-disc') ? localStorage.getItem(DISC_KEY) || '' : ''; } catch { /* no storage */ }
+  const link = `${location.origin}${location.pathname}?room=${inviteCode}${disc ? `&disc=${encodeURIComponent(disc)}` : ''}`;
   navigator.clipboard?.writeText(link).then(() => { $('invite').textContent = 'Invite link copied'; },
     e => addLog(`clipboard: ${e.message}`));
   $('inviteFloat').textContent = 'Link copied';

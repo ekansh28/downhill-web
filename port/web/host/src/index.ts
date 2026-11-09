@@ -189,9 +189,45 @@ async function disc(request: Request, env: HostEnv, ctx: ExecutionContext, rest:
   return discJson({ error: "the disc could not be read" }, 502);
 }
 
+const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
+
+/** The page for an invite link (/?room=CODE): the site's page with its link preview about that
+ *  room, "Join NAME's game", when the room exists; else the site's own preview. Chat apps read the
+ *  tags (deploy.mjs puts the site's in index.html; this rewrites them for the room). */
+async function invitePage(request: Request, env: HostEnv, code: string): Promise<Response> {
+  const page = await env.ASSETS.fetch(new Request(new URL("/", request.url), request));
+  let card: { host: string; players: number; max: number; racing: boolean } | null = null;
+  try {
+    const room = env.ROOM.get(env.ROOM.idFromName(code)) as unknown as { inviteCard(): Promise<typeof card> };
+    card = await Promise.race([room.inviteCard(), new Promise<null>((r) => setTimeout(() => r(null), 2000))]);
+  } catch {
+    card = null;
+  }
+  if (!card || !page.ok) return page;
+  const name = card.host.trim() || "a friend";
+  const title = `Join ${name}'s game`;
+  const description = `${card.racing ? "Racing now" : "Waiting in the room"}: ${card.players} of ${card.max} riders. ` +
+    "Play Downhill Domination in your browser with them, nothing to install and no disc download.";
+  const set = (value: string) => ({ element: (e: Element) => { e.setAttribute("content", value); } });
+  const out = new HTMLRewriter()
+    .on("title", { element: (e) => { e.setInnerContent(`${title} - Downhill Domination`); } })
+    .on('meta[property="og:title"]', set(title))
+    .on('meta[name="twitter:title"]', set(title))
+    .on('meta[name="description"]', set(description))
+    .on('meta[property="og:description"]', set(description))
+    .on('meta[name="twitter:description"]', set(description))
+    .on('meta[property="og:url"]', set(request.url))
+    .transform(page);
+  const headers = new Headers(out.headers);
+  headers.set("Cache-Control", "no-store");  // the room changes; a preview is read once
+  return new Response(out.body, { status: out.status, headers });
+}
+
 export default {
   async fetch(request: Request, env: HostEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const room = (url.searchParams.get("room") || "").toUpperCase();
+    if ((url.pathname === "/" || url.pathname === "/index.html") && JOIN_CODE.test(room)) return invitePage(request, env, room);
     if (url.pathname.startsWith("/v1/")) return server.fetch(request, env);
     const parts = url.pathname.split("/").filter(Boolean);
     if (parts[0] === "disc-data") return discJson({ error: "not found" }, 404);  // only through /disc/<KEY>/

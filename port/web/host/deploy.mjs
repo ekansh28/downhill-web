@@ -222,7 +222,7 @@ const server = JSON.parse(fs.readFileSync(path.join(root, 'online/server/wrangle
 const config = {
   name, main: path.relative(out, path.join(here, 'src/index.ts')).replace(/\\/g, '/'),
   compatibility_date: server.compatibility_date, workers_dev: true, observability: { enabled: true },
-  assets: { directory: './public', binding: 'ASSETS', run_worker_first: ['/v1/*', '/disc/*', '/disc-data/*', '/site.json'] },
+  assets: { directory: './public', binding: 'ASSETS', run_worker_first: ['/v1/*', '/disc/*', '/disc-data/*', '/site.json', '/', '/index.html'] },
   vars, r2_buckets: r2, durable_objects: server.durable_objects, migrations: server.migrations,
   // the abuse guard's limits per address and its daily cleanup (finding 161); the moderation
   // database is the operator's own (online/server/README.md) and optional

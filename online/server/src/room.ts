@@ -332,6 +332,17 @@ export class Room extends DurableObject<Env> {
   private capsFor: unknown = null;
   private capsNow: Caps = CAPS;
 
+  /** For an invite link's preview (port/web/host: "Join NAME's game"): the host's name, the
+      players and the room's size, whether a race runs. Null when there is no room by this code.
+      Only what the room list already shows of a public room; a private room's code is its
+      invite, so whoever has the link may see this much. */
+  async inviteCard(): Promise<{ host: string; players: number; max: number; racing: boolean } | null> {
+    const st = this.state;
+    if (!st || !st.members.length) return null;
+    const host = st.members.find((m) => m.id === st.hostId) ?? st.members[0];
+    return { host: host.name, players: st.members.length, max: st.maxPlayers, racing: !!st.race };
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
