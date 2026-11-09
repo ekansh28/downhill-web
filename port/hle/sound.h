@@ -13,7 +13,9 @@
    Evidence: DHD_SND_WAV=path writes the final 48000 Hz stereo 16-bit mix,
    before the output ring can drop samples. DHD_SND_REPORT=path writes command
    counts (calls, unimplemented dispatches, unsupported sub-operations). Both
-   are refreshed at game ticks, including with DHD_SND_OFF=1. Use ignored
+   are refreshed at game ticks, including with DHD_SND_OFF=1. DHD_SND_VOICE_TRACE=path
+   writes every sounding voice's sound, wave offset, pitch, envelope and volumes every
+   800 samples (finding 133, for comparing with PCSX2's SPU2 voices). Use ignored
    build/ paths: a game WAV contains proprietary audio. */
 #ifndef SOUND_H
 #define SOUND_H
@@ -79,7 +81,8 @@ typedef struct {
     int index;
     uint32_t grain_off;
     int volume, group, pan, ngrains;
-    uint16_t flags;
+    int instance_limit;  /* record byte +5: live copies allowed when flags has 8 (finding 133) */
+    uint16_t flags;      /* 1 loop, 2 solo, 8 instance limit, 0x10 steal the quietest, 0x20 the oldest */
 } SndBankSound;
 
 typedef struct {

@@ -3,9 +3,12 @@
 //! the game. The front end is ../ui; everything that touches files, network or processes is here.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod controls;
 mod disc;
 mod game;
 mod join;
+mod log;
+mod scale;
 mod update;
 
 use serde::Serialize;
@@ -39,6 +42,7 @@ struct App {
 #[derive(Serialize)]
 struct Snapshot {
     version: &'static str,
+    native_window_controls: bool,
     /// Every setting's value: dhd.ini's, else the player's default (dhd_settings).
     settings: BTreeMap<&'static str, String>,
     game_found: bool,
@@ -49,6 +53,9 @@ struct Snapshot {
     texture_pack: bool,
     /// Seconds played in all (saves/playtime.txt).
     played: u64,
+    /// The resolution scale the last run drew at and how far its GPU goes (dhd.log); None when no
+    /// run has said yet.
+    scale: Option<scale::ScaleReport>,
 }
 
 /// A setting as the settings tabs offer it (dhd_settings' table): its default and its choices as
@@ -147,11 +154,13 @@ fn snapshot(app: State<App>) -> Snapshot {
         .unwrap_or_else(|| app.place.data.join("textures").join("SCUS-97177").join("replacements"));
     Snapshot {
         version: VERSION,
+        native_window_controls: cfg!(target_os = "macos"),
         disc_problem: iso.and_then(|p| disc::problem(std::path::Path::new(&p))),
         texture_pack: std::fs::read_dir(pack).is_ok_and(|mut d| d.next().is_some()),
         game_found: app.place.exe().is_file(),
         running: app.game.lock().unwrap().is_some(),
         played: played(&app.place),
+        scale: scale::last_run(&app.place.data.join("dhd.log")),
         settings,
     }
 }
@@ -186,6 +195,24 @@ fn save_setting(app: State<App>, key: String, value: String) -> Result<(), Strin
     save(&app.place, &key, &value)
 }
 
+/// The Controls tab's bindings (controls.rs): the keys, controller buttons and PS2 buttons.
+#[tauri::command]
+fn controls_schema() -> controls::Schema {
+    controls::schema()
+}
+
+/// The keyboard's and both controllers' layouts, as dhd.ini has them.
+#[tauri::command]
+fn controls_state(app: State<App>) -> controls::State {
+    controls::state(&app.place.settings())
+}
+
+/// One change to a layout, by the game's rules; saved when it changes something.
+#[tauri::command]
+fn controls_edit(app: State<App>, device: usize, edit: controls::Request, kind: i32) -> Result<controls::Answer, String> {
+    controls::edit(&app.place.settings(), device, &edit, kind, |k, v| save(&app.place, k, v))
+}
+
 fn save(place: &game::Place, key: &str, value: &str) -> Result<(), String> {
     match dhd_settings::save(&place.settings(), key, value) {
         Ok(true) => Ok(()),
@@ -200,13 +227,29 @@ fn effective(place: &game::Place, key: &str) -> String {
     dhd_settings::read(&place.settings()).unwrap_or_default().effective(key, |n| std::env::var(n).ok())
 }
 
+/// The update check (update::check): dhd.ini's update_url when the player set one, else GitHub,
+/// else the online server's backup. A failure is the bottom bar's one line; launcher.log gets the
+/// technical errors, and a note when the backup answered.
+fn check_for_update(place: &game::Place) -> Result<Option<update::Release>, String> {
+    let own = effective(place, "update_url");
+    match update::check(Some(own.as_str()), update::platform(place), VERSION) {
+        Ok(checked) => {
+            if let Some(note) = checked.note {
+                log::line(&place.data, &note);
+            }
+            Ok(checked.release)
+        }
+        Err(e) => {
+            log::line(&place.data, &e.detail);
+            Err(e.say)
+        }
+    }
+}
+
 #[tauri::command]
-async fn check_update(app: State<'_, App>) -> Result<UpdateCheck, String> {
-    let source = Some(effective(&app.place, "update_url"))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| update::OFFICIAL_SOURCE.into());
-    let platform = update::platform(&app.place);
-    let release = tauri::async_runtime::spawn_blocking(move || update::latest(&source, platform))
+async fn check_update(handle: AppHandle) -> Result<UpdateCheck, String> {
+    let h = handle.clone();
+    let release = tauri::async_runtime::spawn_blocking(move || check_for_update(&h.state::<App>().place))
         .await
         .map_err(|e| e.to_string())??;
     let newer = release.as_ref().is_some_and(|r| update::newer(&r.version, VERSION));
@@ -219,11 +262,16 @@ async fn install_update(handle: AppHandle, release: update::Release) -> Result<(
     let h = handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut last = 0u64;
-        update::install(&release, &h.state::<App>().place, |done, total| {
+        let place = &h.state::<App>().place;
+        update::install(&release, place, |done, total| {
             if done - last >= 256 * 1024 || done == total {
                 last = done;
                 let _ = h.emit("update-progress", Progress { done, total });
             }
+        })
+        .map_err(|e| {
+            log::line(&place.data, &format!("update to {} failed: {}", release.version, e.detail));
+            e.say
         })
     })
     .await
@@ -368,6 +416,69 @@ fn open_link(handle: AppHandle, url: String) -> Result<(), String> {
     handle.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// `--play` (finding 134; a Steam shortcut's launch option, a desktop shortcut): the game starts at
+/// once with the saved settings, without the window, and the launcher ends when the game does; play
+/// time is counted as from PLAY. The game is started as PLAY starts it (Place::start), so it gets
+/// the same data folder, dhd.ini and saves. The window opens instead when the game can't start from
+/// here: no game beside the launcher, no disc image chosen yet or one the game would refuse, or the
+/// game ended asking for an update (the online menu's Update Now: the window offers it).
+/// Updates: per auto_update, a check runs on a thread while the game plays, so the start never
+/// waits for the network; with "on" a newer release is installed after the game ends (the next
+/// start is the new version), with "ask" the next time the window opens offers it, with "off" no
+/// check. Returns the place back when the window should open.
+fn play_at_once(place: game::Place) -> Option<game::Place> {
+    if !place.exe().is_file() {
+        return Some(place);
+    }
+    // the disc the game will use: DHD_ISO before dhd.ini's iso, as the game takes it
+    let iso = Some(effective(&place, "iso")).filter(|s| !s.is_empty());
+    if iso.is_none_or(|p| disc::problem(std::path::Path::new(&p)).is_some()) {
+        return Some(place);
+    }
+    let Ok(mut child) = place.start() else { return Some(place) };
+    let auto = effective(&place, "auto_update");
+    let check = (auto != "off").then(|| {
+        let place = place.clone();
+        std::thread::spawn(move || check_for_update(&place))
+    });
+    let mut since = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) => {}
+            Err(_) => break None,
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        if since.elapsed() >= Duration::from_secs(60) {
+            add_played(&place, &mut since);
+        }
+    };
+    add_played(&place, &mut since);
+    if status.and_then(game::exit_code) == Some(game::UPDATE_EXIT_CODE) {
+        return Some(place);
+    }
+    // with "on", a newer release found while the game ran installs now; a check that hasn't
+    // answered within 15 s is left (the next start checks again): a stalled network must not keep
+    // a windowless launcher running after the game, which Steam would show as still playing
+    let wait_until = Instant::now() + Duration::from_secs(15);
+    let check = check.filter(|c| {
+        while !c.is_finished() && Instant::now() < wait_until {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        c.is_finished()
+    });
+    if auto == "on" {
+        if let Some(Ok(Ok(Some(release)))) = check.map(|c| c.join()) {
+            if update::newer(&release.version, VERSION) {
+                if let Err(e) = update::install(&release, &place, |_, _| {}) {
+                    log::line(&place.data, &format!("update to {} failed: {}", release.version, e.detail));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// SIGTERM and SIGINT (`kill`, a logout, Ctrl+C in a terminal) end the launcher as closing its
 /// window does, with 128 + the signal as its exit code (143, 130), as a shell reports a process the
 /// signal killed: the same on every Unix, whatever the windowing toolkit does with them. A handler
@@ -462,6 +573,25 @@ fn main() {
     /* A link on the command line (or passed by the registered dhd:// scheme on Windows) names a
        room to join: the game gets its code in DHD_NET_ROOM when PLAY starts it (finding 128). */
     let join_code = join::code_from_args(std::env::args());
+    let place = if std::env::args().skip(1).any(|a| a == "--play") {
+        match play_at_once(place) {
+            Some(place) => place,
+            None => return,
+        }
+    } else {
+        place
+    };
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    let context = {
+        let mut context = context;
+        let window = context.config_mut().app.windows.iter_mut().find(|w| w.label == "main")
+            .expect("the launcher window config");
+        window.decorations = true;
+        window.title_bar_style = tauri::TitleBarStyle::Overlay;
+        window.hidden_title = true;
+        context
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -499,6 +629,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             settings_schema,
+            controls_schema,
+            controls_state,
+            controls_edit,
             rider_name,
             save_setting,
             check_update,
@@ -511,6 +644,6 @@ fn main() {
             open_folder,
             open_link
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("the launcher window");
 }

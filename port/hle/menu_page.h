@@ -11,11 +11,14 @@
    - menu_page_value: a value picker, "Label:  < Value >"; left/right change it (and Cross, as
      the page decides); arrows 0: shown without them (it can't be changed);
    - menu_page_text: a line to read, never selected.
-   The footer (p->footer) says what to do; NULL shows the game's PREV / NEXT / BACK / SELECT legend.
+   The footer (p->footer) says what to do; NULL shows the game's PREV / NEXT / BACK / SELECT legend
+   (a tap or click on a word presses its button). A hint about the row under the cursor goes in
+   p->hint, a line of its own above the footer, so the legend stays (on a phone it is the only
+   SELECT and BACK); a page with hints sets p->hints, and its rows leave that line free.
 
    The mouse (menu_mouse_*, below; any of the game's popups gets the same): the row under the
    pointer is selected when the mouse moves, a left click is Cross (on a value picker: its arrows,
-   else the next value), a right click is Triangle, the wheel moves the cursor or changes the value.
+   else the next value; on an ACTION value: Cross), a right click is Triangle, the wheel moves the cursor or changes the value.
    PC SETTINGS (pc_settings.c), EXIT GAME (exit_menu.c) and the online pages (online_menu.c) are
    such pages. */
 #ifndef MENU_PAGE_H
@@ -31,6 +34,10 @@
 
 enum { MENU_PAGE_ROWS = 24, MENU_PAGE_TEXT = 80 };
 enum { MENU_ROW_BUTTON, MENU_ROW_VALUE, MENU_ROW_TEXT };
+/* menu_page_value's arrows: FIXED can't be changed (shown without arrows), ARROWS left/right
+   change it, ACTION is shown without arrows and Cross acts on it (a click is Cross, as on a row:
+   the Controls page's bindings). */
+enum { MENU_VALUE_FIXED, MENU_VALUE_ARROWS, MENU_VALUE_ACTION };
 
 typedef struct MenuPage MenuPage;
 struct MenuPage {
@@ -39,6 +46,8 @@ struct MenuPage {
     int constructed;
     const char *title;
     const char *footer;        /* NULL: the game's PREV / NEXT / BACK / SELECT legend */
+    const char *hint;          /* NULL: none; else a line above the footer (set in update) */
+    int hints;                 /* the page shows hints: its rows keep their line free */
     void (*build)(MenuPage *); /* add the rows (menu_page_row ...); also after menu_page_rebuild */
     void (*update)(MenuPage *, int cursor);  /* every frame, before the game's update */
     void (*accept)(MenuPage *, int row);     /* Cross */
@@ -48,6 +57,7 @@ struct MenuPage {
     int rebuild_row;           /* and the cursor's row then */
     int armed;                 /* the buttons were all released since the page opened */
     unsigned char kind[MENU_PAGE_ROWS];     /* MENU_ROW_* of each row */
+    unsigned char arrows[MENU_PAGE_ROWS];   /* a value row's MENU_VALUE_* */
     char text[MENU_PAGE_ROWS][MENU_PAGE_TEXT];  /* the value rows' text */
     /* A page that lays itself out (the race room): it has no rows and draws in update with the
        menu_draw_* calls below. mouse: once a field when the mouse did something, the pointer in
@@ -55,6 +65,7 @@ struct MenuPage {
     void (*mouse)(MenuPage *, int x, int y, int moved, int left, int wheel);
     void (*draw)(MenuPage *);  /* every frame after the game's update (which starts the popups'
                                   frame afresh): the menu_draw_* calls */
+    int (*header_mouse)(MenuPage *, int x, int y);  /* consumes a click above the rows */
     int title_y;               /* above 0: the title's y, instead of above the rows */
 } __attribute__((aligned(16)));  /* the game stores a u128 at +0x490 with aligned SSE moves */
 
@@ -72,6 +83,7 @@ void menu_page_rebuild_at(MenuPage *p, int row);  /* the same, the cursor on tha
 int menu_page_cursor(const MenuPage *p);
 void menu_page_set_cursor(MenuPage *p, int row);
 int menu_page_rows(const MenuPage *p);
+void menu_page_suffix(MenuPage *p, int row, const char *text);  /* dim text after a row */
 void menu_page_enable(MenuPage *p, int row, int enabled);  /* a row's flag, without building again */
 void menu_page_sound(int next);        /* S_NEXT / S_PREVIOUS, as the value rows play them */
 
@@ -92,6 +104,11 @@ void menu_draw_size(int *width, int *height);  /* the popup view's size */
 void menu_draw_begin(void);            /* each frame, before the first box */
 void menu_draw_box(int x, int y, int w, int h, int level);  /* level 90: the popups' own */
 void menu_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a);  /* a < 128: blended */
+enum { MENU_PICTURE_W = 256, MENU_PICTURE_H = 160 };
+/* A picture for menu_draw_picture: MENU_PICTURE_W x _H PSMCT16 pixels (5:5:5, bit 15 set) in the
+   core's memory, its GS upload in front of it; NULL when out of memory. Kept, never freed. */
+uint16_t *menu_picture_new(void);
+void menu_draw_picture(int x, int y, int w, int h, const uint16_t *picture);  /* bilinear, one sprite */
 void menu_draw_bar(int x, int y, int w, int h);  /* the cursor's bar */
 void menu_draw_text(int align, int x, int y, const char *text, const MenuStyle *s);
 int menu_text_width(const char *text, const MenuStyle *s);

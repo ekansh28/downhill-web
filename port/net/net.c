@@ -15,6 +15,16 @@
 
 enum { REJOIN_ATTEMPTS = 5 };
 
+/* Online play is not offered on phones yet (finding 143): their speed and the touch controls come
+   first. Android builds refuse every connection here, whatever asks (the menu, DHD_NET_*, a
+   dhd.ini server), and the core hides ONLINE (host_service_net_offered). */
+#ifdef __ANDROID__
+#define NET_OFFERED 0
+#else
+#define NET_OFFERED 1
+#endif
+#define NET_NOT_OFFERED "online play comes to phones later"
+
 static NetClient client;
 static WsConn *conn;
 static int inited;
@@ -47,8 +57,8 @@ static const char *on_close(void *ctx, int code, const char *reason, int attempt
     (void)ctx;
     if (!client_on_closed(&client, code, reason))
         return NULL;
-    if (attempt >= REJOIN_ATTEMPTS) {  /* (a race's rejoin also stops at client.c's REJOIN_MS) */
-        client_give_up(&client);
+    if (attempt >= REJOIN_ATTEMPTS) {
+        client_rejoin_failed(&client);
         return NULL;
     }
     client_lobby(&client, &lobby);
@@ -90,6 +100,15 @@ static int connect_to(const char *path)
     SDL_LockMutex(api);
     client_free(&client);
     client_init(&client, name, version, iso);
+    /* the install id (port/hle/host.c; finding 161), read here on the game's thread, the one that
+       sets the environment */
+    client_set_install_id(&client, getenv("DHD_NET_INSTALL_ID"));
+    if (!NET_OFFERED) {
+        client.lobby.state = NET_FAILED;
+        snprintf(client.lobby.error, sizeof client.lobby.error, NET_NOT_OFFERED);
+        SDL_UnlockMutex(api);
+        return -1;
+    }
     if (!base[0]) {
         client.lobby.state = NET_FAILED;
         snprintf(client.lobby.error, sizeof client.lobby.error, "no server: set DHD_NET_SERVER");
@@ -136,32 +155,19 @@ void net_leave(void)
 int net_list_lobbies(NetLobbyInfo *out, int max)
 {
     static char body[64 * 1024];
-    char url[300], path[48];
-    int i, n;
-    snprintf(url, sizeof url, "%s/v1/lobbies", base);
-    if (!base[0] || http_get(url, body, sizeof body) < 0 || (n = json_count(body, "lobbies")) < 0)
+    char url[300];
+    double sent, got;
+    int n;
+    if (!NET_OFFERED || !base[0] || !inited)
         return -1;
-    if (n > max)
-        n = max;
-    for (i = 0; i < n; i++) {
-        NetLobbyInfo *l = &out[i];
-        long long v;
-        memset(l, 0, sizeof *l);
-#define FIELD(key) (snprintf(path, sizeof path, "lobbies[%d]." key, i), path)
-        json_string(body, FIELD("code"), l->code, sizeof l->code);
-        json_string(body, FIELD("roomName"), l->room_name, sizeof l->room_name);
-        json_string(body, FIELD("version"), l->version, sizeof l->version);
-        json_string(body, FIELD("hostName"), l->host_name, sizeof l->host_name);
-        l->track = json_int(body, FIELD("track"), &v) ? (int)v : 0;
-        l->players = json_int(body, FIELD("players"), &v) ? (int)v : 0;
-        l->max_players = json_int(body, FIELD("maxPlayers"), &v) ? (int)v : 0;
-        json_string(body, FIELD("phase"), l->phase, sizeof l->phase);
-        json_bool(body, FIELD("full"), &l->full);
-        json_number(body, FIELD("raceStartedAt"), &l->race_started_at);
-        json_number(body, FIELD("finishEndsAt"), &l->finish_ends_at);
-        json_number(body, FIELD("nextRaceAt"), &l->next_race_at);
-#undef FIELD
-    }
+    snprintf(url, sizeof url, "%s/v1/lobbies", base);
+    sent = net_now_ms();
+    if (http_get(url, body, sizeof body) < 0)
+        return -1;
+    got = net_now_ms();
+    SDL_LockMutex(api);  /* not while connect_to makes the client again */
+    n = client_read_lobbies(&client, body, sent, got, out, max);
+    SDL_UnlockMutex(api);
     return n;
 }
 
@@ -214,6 +220,13 @@ int net_ping_ms(void)
     return inited && (l->state == NET_LOBBY || l->state == NET_RACING) && !l->offline && l->code[0] ? l->ping_ms : -1;
 }
 
+/* In a race, the other riders' delay (ms; client_riders_ms), else -1: the counter shows it
+   instead of the ping to the room's server, which carries no race data (finding 169). */
+int net_riders_ms(void)
+{
+    return inited && client.racing && !client.lobby.offline ? client_riders_ms(&client) : -1;
+}
+
 int net_racing(void)
 {
     return inited && client.racing;
@@ -243,6 +256,7 @@ int net_receive_frame(uint8_t *out, size_t max)
 #include "../host/host_api.h"
 #include "../include/guest.h"
 void host_service_net_init(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) { net_init((const char *)GUEST(a0), (const char *)GUEST(a1), (const char *)GUEST(a2), (const char *)GUEST(a3)); }
+int host_service_net_offered(void) { return NET_OFFERED; }
 int host_service_net_create_room(void) { return net_create_room(); }
 int host_service_net_join_room(uint32_t a0) { return net_join_room((const char *)GUEST(a0)); }
 void host_service_net_leave(void) { net_leave(); }

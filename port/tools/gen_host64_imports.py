@@ -283,6 +283,7 @@ static void region_callback(uintptr_t lo, uintptr_t hi, int host) {
             'host_service_mouse_state': [(0,'sizeof(HostMouse)')],
             'host_service_presence': [(0,'sizeof(HostPresence)')],
             'host_service_presence_join': [(0,'8')],
+            'host_service_touch_field': [(0,'sizeof(HostTouch)')],
             'host_service_movie_audio': [(0,'host64_bridge_array_bytes((int32_t)a1,8)')],
             'host_service_vif_feed': [(1,'host64_bridge_array_bytes((int32_t)a2,4)')],
             'host_service_graphics_feed': [(1,'host64_bridge_array_bytes((int32_t)a2,4)')],
@@ -298,12 +299,16 @@ static void region_callback(uintptr_t lo, uintptr_t hi, int host) {
             'host_service_net_hash_ranges': [(0,'host64_bridge_array_bytes((int32_t)a1,8)')],
             'host_service_gs_read_image': [(0,'a1')],
             'host_service_gs_defer_read_image': [(0,'a1')],
+            'host_service_gs_store_image': [(0,'112'),(1,'a2')],
             'host_service_gs_snapshot': [(0,'a1')],
             'host_service_gs_trace_pop': [(0,'host_service_gs_trace_size()')],
             'host_frame_registers': [(0,'20')], 'host_console_write': [(0,'a1')],
             'host_service_host_game_options_read': [(0,'a1')],
             'host_service_text_input_edit': [(0,'host64_bridge_array_bytes((int32_t)a1,1)')],
             'host_vu1_snapshot': [(0,'2096')], 'host_vu1_file': [(0,'1024')],
+            'host_service_controls_layout': [(1,'52')],
+            'host_service_controls_change': [(5,'host64_bridge_array_bytes((int32_t)a6,1)')],
+            'host_service_controls_map': [(1,'16'),(2,'sizeof(HostPad)')],
         }
         for i, length in spans.get(name, []):
             code.append(f'    (void)host64_bridge_pointer(a{i},{length});')

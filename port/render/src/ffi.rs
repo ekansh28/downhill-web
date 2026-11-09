@@ -323,6 +323,8 @@ const _: dhdr_surface_create_fn = dhdr_surface_create;
 const _: dhdr_surface_destroy_fn = dhdr_surface_destroy;
 const _: dhdr_surface_usage_fn = dhdr_surface_usage;
 const _: dhdr_present_exact_fn = dhdr_present_exact;
+const _: dhdr_surface_counter_fn = dhdr_surface_counter;
+const _: dhdr_surface_touch_fn = dhdr_surface_touch;
 const _: dhdr_surface_present_fn = dhdr_surface_present;
 
 /// # Safety
@@ -401,11 +403,22 @@ pub unsafe extern "C" fn dhdr_present_exact(s: *mut DhdrSurface, x: *mut DhdrExa
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn dhdr_surface_counter(s: *mut DhdrSurface, enabled: i32, ping: i32, seconds: f64) {
+pub unsafe extern "C" fn dhdr_surface_counter(s: *mut DhdrSurface, enabled: i32, ms: i32, riders: i32, seconds: f64) {
     const E: &str = "dhdr_surface_counter";
     let _g = Guard::enter(E);
     // SAFETY: the caller owns a live surface, as for surface_present.
-    unsafe { surface(s, E) }.with(E, |s| s.counter.update(enabled != 0, ping, seconds));
+    unsafe { surface(s, E) }.with(E, |s| s.counter.update(enabled != 0, ms, riders != 0, seconds));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dhdr_surface_touch(s: *mut DhdrSurface, items: *const f32, count: u32, width_mm: f32, height_mm: f32) {
+    const E: &str = "dhdr_surface_touch";
+    let _g = Guard::enter(E);
+    let floats = count as usize * crate::present::touch::ITEM_FLOATS;
+    // SAFETY: the caller passes `count` shapes of ITEM_FLOATS floats each (or none).
+    let items: &[f32] = if items.is_null() || count == 0 { &[] } else { unsafe { std::slice::from_raw_parts(items, floats) } };
+    // SAFETY: as surface_present.
+    unsafe { surface(s, E) }.with(E, |s| s.touch.set(items, width_mm, height_mm));
 }
 
 #[no_mangle]
@@ -414,7 +427,7 @@ pub unsafe extern "C" fn dhdr_surface_present(s: *mut DhdrSurface) {
     let _g = Guard::enter(E);
     // SAFETY: as surface().
     unsafe { surface(s, E) }.with(E, |s| {
-        s.draw_counter();
+        s.draw_overlays();
         // The present test-hook point: the frame, read back before it is presented.
         #[cfg(feature = "test-hooks")]
         if s.usage() & DHDR_SURFACE_COPY_SRC != 0 {

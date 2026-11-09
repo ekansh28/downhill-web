@@ -95,6 +95,21 @@ pub const SETTINGS: &[Setting] = &[
     Setting { other: "exact", ..choice("renderer", "DHD_RENDER", &[c("native", "Native"), c("exact", "Exact")], "native", "exact") },
     switch("skip_movies", "DHD_SKIP_MOVIES", SWITCH, "1", "0"),
     switch("vibration", "DHD_VIBRATION", SWITCH, "1", "1"),
+    // The sticks' dead zone (finding 134, port/hle/stick.h): game = the game's own (about 36%, as the
+    // PS2 always had it); a percentage moves where steering, leaning and the right stick start, with
+    // the whole travel past it used. Another number (dhd.ini) is a percentage too.
+    choice("stick_dead_zone", "DHD_STICK_DEAD_ZONE", &[c("game", "Game (36%)"), c("5", "5%"), c("10", "10%"), c("15", "15%"),
+                                                       c("20", "20%"), c("25", "25%"), c("30", "30%"), c("40", "40%"),
+                                                       c("50", "50%")], "game", "game"),
+    // The button symbols the game shows (finding 134, port/hle/prompts.c): auto = the connected
+    // controller's kind (player 1's; the PS2's own without one). The tools' runs keep the PS2's.
+    choice("prompts", "DHD_PROMPTS", &[c("auto", "Auto"), c("playstation", "PlayStation"), c("xbox", "Xbox"),
+                                       c("nintendo", "Nintendo")], "auto", "playstation"),
+    // The keys and controller buttons for the PS2 pad's buttons (finding 157, controls.rs): the
+    // keyboard's layout and each player's controller's; empty, the game's own layouts.
+    text("keyboard", "DHD_KEYBOARD"),
+    text("pad1", "DHD_PAD1"),
+    text("pad2", "DHD_PAD2"),
     // A PCSX2 texture pack: texture_pack its folder (empty: textures/SCUS-97177/replacements in the
     // folder of dhd.ini and the saves, else beside the game), textures = off the game's own textures.
     switch("textures", "DHD_TEXTURES", TOGGLE, "on", "on"),
@@ -122,10 +137,41 @@ pub const SETTINGS: &[Setting] = &[
     // Online: stay ready when the host changes the track (port/net/client.c keep_ready).
     switch("keep_ready", "DHD_KEEP_READY", SWITCH, "1", "1"),
     switch("unlock_all", "DHD_UNLOCK_ALL", SWITCH, "0", "0"),
+    // The touch controls on phones (finding 141, port/hle/touch.c; the TOUCH CONTROLS pages): the
+    // preset, the hand (left mirrors the controls and the HUD), stick or tilt steering, the size (auto:
+    // the screen height's rule, 100% at most) and the opacity, the steering stick (floating or fixed)
+    // and its range, the trick stick's size, the trick labels, the attacks (flick off PEDAL or
+    // buttons), vibration, whether a controller hides the overlay, tilt's strength and centre (degrees),
+    // the hints already shown (a number) and the layout editor's changes.
+    choice("touch_preset", "DHD_TOUCH_PRESET", &[c("thumb", "Thumb zones"), c("classic", "Classic pad")], "classic", "classic"),  // the full pad by default
+    choice("touch_hand", "DHD_TOUCH_HAND", &[c("right", "Right"), c("left", "Left")], "right", "right"),
+    choice("touch_steer", "DHD_TOUCH_STEER", &[c("stick", "Stick"), c("tilt", "Tilt")], "stick", "stick"),
+    choice("touch_size", "DHD_TOUCH_SIZE", &[c("auto", "Auto"), c("70", "70%"), c("75", "75%"), c("80", "80%"), c("85", "85%"),
+                                             c("90", "90%"), c("95", "95%"), c("100", "100%"), c("105", "105%")], "auto", "auto"),
+    choice("touch_opacity", "DHD_TOUCH_OPACITY", &[c("25", "25%"), c("30", "30%"), c("35", "35%"), c("40", "40%"), c("45", "45%"),
+                                                   c("50", "50%"), c("55", "55%"), c("60", "60%"), c("65", "65%"), c("70", "70%"),
+                                                   c("75", "75%"), c("80", "80%"), c("85", "85%"), c("90", "90%"), c("95", "95%"),
+                                                   c("100", "100%")], "60", "60"),
+    choice("touch_stick", "DHD_TOUCH_STICK", &[c("floating", "Floating"), c("fixed", "Fixed")], "floating", "floating"),
+    choice("touch_stick_range", "DHD_TOUCH_STICK_RANGE", &[c("8", "8 mm"), c("10", "10 mm"), c("12", "12 mm"), c("14", "14 mm"),
+                                                           c("16", "16 mm"), c("18", "18 mm"), c("20", "20 mm")], "12", "12"),
+    choice("touch_trick_stick", "DHD_TOUCH_TRICK_STICK", &[c("25", "25 mm"), c("28", "28 mm"), c("31", "31 mm"), c("34", "34 mm"),
+                                                           c("37", "37 mm")], "31", "31"),
+    choice("touch_labels", "DHD_TOUCH_LABELS", &[c("auto", "Auto"), c("always", "Always"), c("off", "Off")], "auto", "auto"),
+    choice("touch_attacks", "DHD_TOUCH_ATTACKS", &[c("flick", "Flick"), c("buttons", "Buttons")], "flick", "flick"),
+    switch("touch_vibration", "DHD_TOUCH_VIBRATION", &[c("0", "Off"), c("1", "On")], "1", "1"),
+    choice("touch_with_pad", "DHD_TOUCH_WITH_PAD", &[c("hide", "Hide"), c("show", "Show")], "hide", "hide"),
+    choice("touch_tilt_strength", "DHD_TOUCH_TILT_STRENGTH", &[c("0", "0%"), c("10", "10%"), c("20", "20%"), c("30", "30%"),
+                                                               c("40", "40%"), c("50", "50%"), c("60", "60%"), c("70", "70%"),
+                                                               c("80", "80%"), c("90", "90%"), c("100", "100%")], "50", "50"),
+    text("touch_tilt_centre", "DHD_TOUCH_TILT_CENTRE"),
+    text("touch_hints", "DHD_TOUCH_HINTS"),
+    text("touch_edits", "DHD_TOUCH_EDITS"),
     text("memory_card", "DHD_MEMCARD"),
     text("sound_latency_ms", "DHD_SND_LATENCY_MS"),
     Setting { default: OFFICIAL_SERVER, builtin: OFFICIAL_SERVER, always: true, ..text("server", "DHD_NET_SERVER") },
     text("name", "DHD_NET_NAME"),
+    choice("names", "DHD_NAMES", &[c("off", "Off"), c("small", "Small"), c("medium", "Medium"), c("large", "Large")], "small", "small"),
     text("rider", "DHD_NET_RIDER"),
     // The launcher's: whether it looks for a newer release, and where (empty: the official releases).
     choice("auto_update", "", &[c("ask", "Ask"), c("on", "Automatic"), c("off", "Off")], "ask", "ask"),

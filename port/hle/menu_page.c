@@ -11,6 +11,7 @@
    Below them, the mouse for every popup the manager runs, the game's own as well (finding 092). */
 #include "hle.h"
 #include "menu_page.h"
+#include "../include/fps.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,16 +78,27 @@ static void footer(MenuPage *p)
 
 /* The rows start at 0x54 under the title (0x40), 10 apart, and the footer sits at 0xCC. A long
    page (PC SETTINGS: 13 rows) would run its last rows into the footer, so the title and the rows
-   move up together until the last row ends a gap above it. */
-enum { ROW_Y = 0x54, ROW_STEP = 10, TITLE_ABOVE = 0x14, FOOTER_Y = 0xCC, FOOTER_GAP = 16, TITLE_MIN = 0x10 };
+   move up together until the last row ends a gap above it.
+   A page with hints (p->hints) draws them on a line of their own HINT_ABOVE the footer, so the
+   legend under them stays; its last row ends a row above that line. Its title may go up to
+   TITLE_MIN_HINTS, and a page that still doesn't fit (PC SETTINGS' 16 rows and Touch Controls)
+   draws its rows closer together. */
+enum { ROW_Y = 0x54, ROW_STEP = 10, TITLE_ABOVE = 0x14, FOOTER_Y = 0xCC, FOOTER_GAP = 16, TITLE_MIN = 0x10,
+       HINT_ABOVE = 11, TITLE_MIN_HINTS = 0x0C };
 
 static void rows(MenuPage *p)
 {
     MENU(p, X_COUNT, int) = 0;
     p->build(p);
-    int n = menu_page_rows(p), y = ROW_Y;
-    if (n > 0 && y + (n - 1) * ROW_STEP > FOOTER_Y - FOOTER_GAP) y = FOOTER_Y - FOOTER_GAP - (n - 1) * ROW_STEP;
-    if (y < TITLE_MIN + TITLE_ABOVE) y = TITLE_MIN + TITLE_ABOVE;
+    int n = menu_page_rows(p), y = ROW_Y, step = ROW_STEP;
+    int last = p->hints ? FOOTER_Y - HINT_ABOVE - ROW_STEP : FOOTER_Y - FOOTER_GAP;
+    int top = (p->hints ? TITLE_MIN_HINTS : TITLE_MIN) + TITLE_ABOVE;
+    if (n > 0 && y + (n - 1) * step > last) y = last - (n - 1) * step;
+    if (y < top) {
+        y = top;
+        if (p->hints && n > 1 && y + (n - 1) * step > last) step = (last - y) / (n - 1);
+    }
+    MENU(p, X_ROW_STEP, int) = step;
     MENU(p, X_ROW_Y, int) = y;
     MENU(p, X_TITLE, Item).y = (short)(y - TITLE_ABOVE);
 }
@@ -129,6 +141,10 @@ static void slot_update(void *menu)  /* slot 5, as func_0015E750: the page, then
     set_text(&MENU(p, X_TITLE, Item), 1, p->title);
     footer(p);
     func_0018DC20(menu);
+    if (p->hint && *p->hint) {  /* its own line above the legend, in the legend's style */
+        MenuStyle s = menu_page_style(p, MENU_STYLE_OFF);
+        menu_draw_text(MENU_CENTRE, MENU(p, X_FOOTER, Item).x, FOOTER_Y - HINT_ABOVE, p->hint, &s);
+    }
     if (p->draw) p->draw(p);
 }
 
@@ -221,7 +237,7 @@ static void value_text(char *out, const char *label, const char *value, int arro
     char shown[MENU_PAGE_TEXT];
     size_t n = strlen(value);
     int star = n >= 2 && !strcmp(value + n - 2, " *");
-    snprintf(shown, sizeof shown, arrows ? "< %.*s >%s" : "%.*s%s", (int)(star ? n - 2 : n), value, star ? " *" : "");
+    snprintf(shown, sizeof shown, arrows == MENU_VALUE_ARROWS ? "< %.*s >%s" : "%.*s%s", (int)(star ? n - 2 : n), value, star ? " *" : "");
     if (label && *label) snprintf(out, MENU_PAGE_TEXT, "%s  %s", label, shown);
     else snprintf(out, MENU_PAGE_TEXT, "%s", shown);
 }
@@ -231,6 +247,7 @@ int menu_page_value(MenuPage *p, const char *label, const char *value, int arrow
     int row = menu_page_rows(p);
     if (row >= MENU_PAGE_ROWS) return -1;
     value_text(p->text[row], label, value, arrows);
+    p->arrows[row] = (unsigned char)arrows;
     return add(p, p->text[row], 1, MENU_ROW_VALUE);
 }
 
@@ -238,6 +255,17 @@ void menu_page_value_set(MenuPage *p, int row, const char *label, const char *va
 {
     if (row < 0 || row >= menu_page_rows(p) || row >= MENU_PAGE_ROWS) return;
     value_text(p->text[row], label, value, arrows);
+    p->arrows[row] = (unsigned char)arrows;
+}
+
+void menu_page_suffix(MenuPage *p, int row, const char *text)
+{
+    if (row < 0 || row >= menu_page_rows(p)) return;
+    MenuStyle normal = menu_page_style(p, MENU_STYLE_ROW);
+    MenuStyle dim = menu_page_style(p, MENU_STYLE_OFF);
+    int x = MENU(p, X_ROW_X, int) + menu_text_width(p->text[row], &normal) / 2 + 24;  /* a clear gap after the row */
+    int y = MENU(p, X_ROW_Y, int) + row * MENU(p, X_ROW_STEP, int);
+    menu_draw_text(MENU_LEFT, x, y, text, &dim);
 }
 
 void menu_page_enable(MenuPage *p, int row, int enabled)
@@ -350,6 +378,91 @@ void menu_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a)
     func_002103D8(D_00513B00, view, start);
 }
 
+/* The track picker's picture (finding 132): one bilinear sprite of a 256 x 160 PSMCT16 texture
+   at GS blocks 0x3C00-0x3E00 (TBW 4; its 256-line footprint is 16 pages). A census of every TEX0,
+   CLUT, FRAME, ZBUF and upload address the GS saw from boot through the main and online menus,
+   the shop, the rider screen, the room and the picker found 0x38E0-0x3F80 never touched; the
+   shell's texture bins can reach 0x3B9F (their end, word 0xEE7F0) and small render targets start
+   at 0x3F80, so this keeps 3 pages below it and 12 above. The pixels go to the GS from the core's
+   own memory (PATH3, host_service_graphics_feed) once per new picture, never through the game's
+   heap; the draw takes three of the popups' rectangle packets. 16-bit because a 32-bit 256 x 256
+   footprint (32 pages) would reach 0x3F80. */
+enum { PIC_TBP = 0x3C00, PIC_HEADER = 6, PIC_BYTES = MENU_PICTURE_W * MENU_PICTURE_H * 2 };
+static const uint16_t *uploaded;       /* the picture now in VRAM; NULL: upload before drawing */
+static unsigned picture_idle;
+
+uint16_t *menu_picture_new(void)
+{
+    unsigned char *raw = malloc(PIC_HEADER * 16 + PIC_BYTES + 15);
+    if (!raw) return NULL;
+    uint64_t *h = (uint64_t *)(((uintptr_t)raw + 15) & ~(uintptr_t)15);
+    h[0] = 4 | 1ull << 60, h[1] = 0xE;                                   /* A+D, 4 registers */
+    h[2] = (uint64_t)PIC_TBP << 32 | 4ull << 48 | 2ull << 56, h[3] = 0x50;  /* BITBLTBUF: PSMCT16, DBW 4 */
+    h[4] = 0, h[5] = 0x51;                                               /* TRXPOS 0, 0 */
+    h[6] = MENU_PICTURE_W | (uint64_t)MENU_PICTURE_H << 32, h[7] = 0x52;  /* TRXREG */
+    h[8] = 0, h[9] = 0x53;                                               /* TRXDIR: host to local */
+    h[10] = (PIC_BYTES / 16) | 0x8000 | 2ull << 58, h[11] = 0;           /* IMAGE, EOP */
+    return (uint16_t *)(h + 12);
+}
+
+/* Once a field: a picture not drawn in the last field is uploaded again next time (the picker
+   reopened): its GS blocks are free only while the shell runs (finding 132's census), so a race or
+   anything else in between may have used them. */
+static void menu_preview_field(void)
+{
+    if (uploaded && ++picture_idle > 1) uploaded = NULL;
+}
+
+void menu_draw_picture(int x, int y, int w, int h, const uint16_t *picture)
+{
+    if (!picture || !rect_packets || rects_used + 3 > DRAW_RECTS || w <= 0 || h <= 0) return;
+    picture_idle = 0;
+    if (picture != uploaded) {
+        static int logged;
+        if (!logged++) hle_log("menu: track picture: %d bytes to GS blocks %X-%X from the core's memory, per new picture\n",
+                               PIC_BYTES, PIC_TBP, PIC_TBP + 512);
+        host_service_graphics_feed(2, GADDR((const uint64_t *)picture - PIC_HEADER * 2), (PIC_HEADER * 16 + PIC_BYTES) / 4);
+        uploaded = picture;
+    }
+    int view = draw_view(), cx, cy, vw, vh;
+    func_0023D618(view, &cx, &cy);
+    func_0023D650(view, &vw, &vh);
+    int left = cx - (vw >> 1) + x, top = cy - (vh >> 1) + y;
+    uint64_t *a = rect_packets[rects_used++], *b = rect_packets[rects_used++], *c = rect_packets[rects_used++], *q;
+    memset(a, 0, sizeof *rect_packets);
+    memset(b, 0, sizeof *rect_packets);
+    memset(c, 0, sizeof *rect_packets);
+    q = a + 2;  /* TEXFLUSH; TEX0: the picture, DECAL; TEX1: bilinear (the text packets set their own) */
+    q[0] = 3 | 1ull << 60, q[1] = 0xE, q += 2;
+    q[0] = 0, q[1] = 0x3F, q += 2;
+    q[0] = PIC_TBP | 4u << 14 | 2u << 20 | 8ull << 26 | 8ull << 30 | 1ull << 35, q[1] = 0x06, q += 2;
+    q[0] = 0x60, q[1] = 0x14, q += 2;
+    a[0] = (uint64_t)(((q - a) / 2) | 0x60000000), a[1] = 0;
+    func_002103D8(D_00513B00, view, a);
+    /* Two triangles (a strip), not a sprite: the native renderer draws upscaled sprites (flag 1024)
+       sampling each GS pixel once, as at 1x, so a sprite's picture stays blocky at 2x-8x; a
+       triangle's UV runs across every rendered pixel, so bilinear works at any scale. Same
+       rectangle and texels at 1x. UV half a texel inside so bilinear stays in the 160 lines. */
+    const uint64_t u0 = 8, v0 = 8, u1 = MENU_PICTURE_W * 16 - 8, v1 = MENU_PICTURE_H * 16 - 8;
+    q = b + 2;  /* top left, top right */
+    q[0] = 1 | 1ull << 46 | 0x114ull << 47 | 5ull << 60, q[1] = 0x53531, q += 2;
+    func_002105A0(D_00513B00, q, 128, 128, 128, 128), q += 2;
+    q[0] = u0 | v0 << 32, q += 2;
+    func_00210578(D_00513B00, q, left, top), q += 2;
+    q[0] = u1 | v0 << 32, q += 2;
+    func_00210578(D_00513B00, q, left + w, top), q += 2;
+    b[0] = (uint64_t)(((q - b) / 2) | 0x60000000), b[1] = 0;
+    func_002103D8(D_00513B00, view, b);
+    q = c + 2;  /* bottom left, bottom right: the strip goes on */
+    q[0] = 2 | 0x8000 | 2ull << 60, q[1] = 0x53, q += 2;
+    q[0] = u0 | v1 << 32, q += 2;
+    func_00210578(D_00513B00, q, left, top + h), q += 2;
+    q[0] = u1 | v1 << 32, q += 2;
+    func_00210578(D_00513B00, q, left + w, top + h), q += 2;
+    c[0] = (uint64_t)(((q - c) / 2) | 0x60000000), c[1] = 0;
+    func_002103D8(D_00513B00, view, c);
+}
+
 void menu_draw_bar(int x, int y, int w, int h) { func_0018F9C0(0, x, y, w, h); }
 
 void menu_draw_text(int align, int x, int y, const char *text, const MenuStyle *s)
@@ -362,13 +475,18 @@ void menu_draw_text(int align, int x, int y, const char *text, const MenuStyle *
     else func_0020F9F0(0, view, x, y, text);
 }
 
+/* Retail's width routine knows the capitals only (its menus write in capitals); lowercase draws
+   as small capitals, so measuring the capitals gives an upper bound for mixed-case names. */
 int menu_text_width(const char *text, const MenuStyle *s)
 {
-    char saved[0x20];
+    char saved[0x20], upper[160];
+    size_t n = 0;
+    for (; text[n] && n < sizeof upper - 1; n++) upper[n] = text[n] >= 'a' && text[n] <= 'z' ? (char)(text[n] - 32) : text[n];
+    upper[n] = 0;
     memcpy(saved, D_004F3570, sizeof saved);
     func_0020FB80(0, s->size[0], s->size[1], s->size[2], s->size[3]);
     *(int *)(D_004F3570 + 0x1C) = 0;
-    int width = func_0020F860(0, text) >> 4;
+    int width = func_0020F860(0, upper) >> 4;
     memcpy(D_004F3570, saved, sizeof saved);
     return width;
 }
@@ -504,10 +622,43 @@ static int row_enabled(void *menu, int row)
     return ((Item *)((char *)menu + X_ITEMS))[row].enabled != 0;
 }
 
+/* The button of our page's legend ("<- PREV -> NEXT /\ BACK X SELECT", the footer when the page
+   has no text of its own) under the pointer, 0 none: each word with the button symbol before it,
+   measured in the footer's style as drawn (centred at its x). On a phone that is the only way to
+   say SELECT, as nothing else on the screen is a button. PREV and NEXT follow their arrows, left
+   and right: a value row's previous and next value (a row without a value ignores them). */
+static uint16_t page_legend_button(void *menu, int view)
+{
+    static const struct { const char *word; uint16_t button; } words[] = {
+        {"PREV", PAD_LEFT}, {"NEXT", PAD_RIGHT}, {"BACK", PAD_TRIANGLE}, {"SELECT", PAD_CROSS}};
+    Item *foot = &AT(menu, X_FOOTER, Item);
+    int mx, my;
+    if (foot->id != TEXT_PREV_NEXT || foot->string || !pointer(view, &mx, &my)) return 0;
+    if (my < foot->y - 6 || my > foot->y + 16) return 0;
+    const char *text = (const char *)(uintptr_t)(uint32_t)func_0018D860(foot);
+    if (!text) return 0;
+    int length = (int)strnlen(text, MENU_PAGE_TEXT), width = measure(menu, X_STYLE + 8, text, length);
+    int start = foot->x - width / 2;
+    if (mx < start - 8 || mx > start + width + 8) return 0;
+    uint16_t best = 0;
+    int best_end = 1 << 30;
+    for (unsigned i = 0; i < sizeof words / sizeof *words; i++) {  /* the first word ending right of the pointer */
+        const char *at = strstr(text, words[i].word);
+        if (!at) continue;
+        int end = start + measure(menu, X_STYLE + 8, text, (int)(at - text) + (int)strlen(words[i].word));
+        if (mx <= end + 4 && end < best_end) best = words[i].button, best_end = end;
+    }
+    return best;
+}
+
 /* The open popup and the mouse's news this field: hover, clicks, wheel. */
 static void popup_mouse(void *menu, int view, int moved, int left, int right, int wheel)
 {
     MenuPage *p = page_of(menu);
+    if (p && p->header_mouse && left) {
+        int mx, my;
+        if (pointer(view, &mx, &my) && p->header_mouse(p, mx, my)) return;
+    }
     if (p && p->mouse) {  /* a page that lays itself out hit-tests its own pieces */
         int mx, my;
         if (pointer(view, &mx, &my) && (moved || left || wheel)) p->mouse(p, mx, my, moved, left, wheel);
@@ -515,16 +666,19 @@ static void popup_mouse(void *menu, int view, int moved, int left, int right, in
         return;
     }
     int left_arrow, row = row_at(menu, view, &left_arrow);
-    int value_row = p && row >= 0 && row < MENU_PAGE_ROWS && p->kind[row] == MENU_ROW_VALUE;
+    int value_row = p && row >= 0 && row < MENU_PAGE_ROWS && p->kind[row] == MENU_ROW_VALUE && p->arrows[row] != MENU_VALUE_ACTION;
     if (moved && row >= 0 && row_enabled(menu, row) && AT(menu, X_CURSOR, int) != row)
         AT(menu, X_CURSOR, int) = row;
     if (left && row >= 0 && row_enabled(menu, row)) {
         AT(menu, X_CURSOR, int) = row;
         press(value_row ? (left_arrow ? PAD_LEFT : PAD_RIGHT) : PAD_CROSS);
+    } else if (left && row < 0 && p) {  /* our pages' legend */
+        uint16_t b = page_legend_button(menu, view);
+        if (b) press(b);
     }
     if (right) press(PAD_TRIANGLE);
     int cursor = AT(menu, X_CURSOR, int);
-    int on_value = p && cursor >= 0 && cursor < MENU_PAGE_ROWS && p->kind[cursor] == MENU_ROW_VALUE;
+    int on_value = p && cursor >= 0 && cursor < MENU_PAGE_ROWS && p->kind[cursor] == MENU_ROW_VALUE && p->arrows[cursor] != MENU_VALUE_ACTION;
     for (; wheel > 0; wheel--) press(on_value ? PAD_RIGHT : PAD_UP);
     for (; wheel < 0; wheel++) press(on_value ? PAD_LEFT : PAD_DOWN);
 }
@@ -637,6 +791,7 @@ static int shell_ran;                   /* a shell frame has run: the game's vie
 
 void port_shell_frame(void)
 {
+    port_loop_frame(0);   /* not in a race (fps.h, finding 159) */
     shell_fill ^= 1;
     shell_count[shell_fill] = 0;
     shell_seen = fields;
@@ -855,6 +1010,7 @@ static void trace_screens(void)
 void menu_mouse_field(void)
 {
     fields++;
+    menu_preview_field();  /* the track picture: uploaded again after a pause */
     if (shell_trace < 0) shell_trace = getenv("DHD_MOUSE_TRACE") != NULL;
     if (queued && ++press_field >= 2 * PRESS_FIELDS) {  /* this press is done: the next one */
         memmove(queue, queue + 1, (size_t)(queued - 1) * sizeof *queue);

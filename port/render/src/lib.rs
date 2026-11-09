@@ -14,6 +14,7 @@
 //! | `abi` | F0a | the `#[repr(C)]` mirrors of the header (frozen) |
 //! | `ffi`, `guard`, `host`, `log`, `shaders` | F0b | exports, MXCSR guard and `Owned`, host log, logger, WGSL |
 //! | `device` | A2 | the process's one device |
+//! | `lost` | 171 | a lost device: noticed, its reason logged once (the game then ends) |
 //! | `exact::pipelines` | A2 | raster.wgsl's compute pipelines |
 //! | `exact::{buffers, encoder, readback}` | A3 (B1: wasm readback) | the 11 buffers, the open encoder and pass, reads |
 //! | `exact::display` | A4 | the display texture, scanout's bind group, capture |
@@ -37,6 +38,7 @@ pub mod ffi;
 pub mod guard;
 pub mod host;
 pub mod log;
+pub mod lost;
 pub mod shaders;
 
 /// The texture packs' PNG decoder (port/gs/texpack.c), on every native platform.
@@ -99,8 +101,10 @@ pub mod exact {
 /// browser) and present.wgsl's pass for exact frames.
 pub mod present {
     pub mod counter;
+    pub mod font8x8;
     pub mod pipe;
     pub mod surface;
+    pub mod touch;
 }
 
 /// The native renderer's GPU half (once the retired C path's gpu_wgpu_native.inc, last at
@@ -109,6 +113,8 @@ pub mod present {
 pub mod native {
     pub mod arenas;
     pub mod convert;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod gpu_stats;
     pub mod init;
     pub mod pipelines;
     pub mod present;
@@ -149,7 +155,7 @@ pub mod native {
         pub commands: &'a [DhdrCommand],
         pub converts: &'a [DhdrConvert],
         pub surfaces: &'a [DhdrSurfaceInfo],
-        /// The scanned-out surface, or -1.
+        /// The scanned-out surface, -1 (none: the last picture stays) or `abi::DISPLAY_OFF` (black).
         pub display_surface: i32,
         pub display: [u32; 12],
         /// `movie_on`: the movie frame (width, height, RGBA8 pixels), shown instead.

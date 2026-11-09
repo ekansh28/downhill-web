@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Downhill Revived on Android (finding 091). After SDL's android-project template (SDL 3.4.18):
-     one landscape activity over SDL's SDLActivity, gamepads (Bluetooth or USB), no touch controls. -->
+     one landscape activity over SDL's SDLActivity, gamepads (Bluetooth or USB) and the touch controls (finding 141). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     android:installLocation="internalOnly">
 
@@ -13,7 +13,8 @@
 
     <!-- Controller rumble -->
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- The online menu (its server list) -->
+    <!-- The update notice (port/host/android_update.c, finding 143): once a day it asks the online
+         server, then GitHub, whether a newer release has an APK. Phones have no online play yet. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application android:label="@string/app_name"
@@ -25,6 +26,24 @@
         android:enableOnBackInvokedCallback="false"
         android:hardwareAccelerated="true">
 
+        <!-- The first start: the disc image (SetupActivity.java, finding 143), then the game. Its
+             configChanges are DhdActivity's and density, mcc and mnc: a font size, language, display
+             or SIM change during the copy keeps the activity (and so the copy) instead of making it
+             again. -->
+        <activity android:name=".SetupActivity"
+            android:label="@string/app_name"
+            android:theme="@style/SetupTheme"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|density|mcc|mnc|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The icon's long-press shortcut: Share log, without starting the game (finding 152) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+
         <activity android:name=".DhdActivity"
             android:label="@string/app_name"
             android:screenOrientation="sensorLandscape"
@@ -34,14 +53,17 @@
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:preferMinimalPostProcessing="true"
             android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
             <!-- USB controllers -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
         </activity>
+
+        <!-- The shared log's file for the app the player shares it with (LogShare.java, finding
+             152): not exported, read only through the share's grant; our own, no androidx -->
+        <provider android:name=".LogProvider"
+            android:authorities="app.downhillrevived.logs"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

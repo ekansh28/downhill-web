@@ -349,6 +349,13 @@ PATCHES = {
          '        hle_puppet_start_point(D_0043EEC0, p);\n        if (func_001A0498(D_0043EEC0, &start.pos, start.matrix)) {'),
         ('text', 'u128 *v = func_001177F8(D_0029EA20, I(0x7978));',
          'u128 *v = func_001177F8(D_0029EA20, hle_puppet_grid(p, I(0x7978)));')],
+    # Shared online track pickups; retail effect and respawn code stay intact offline.
+    'unsorted/00196590.c': [
+        ('text', 'void func_00196590(Obj *obj, Rider *rider) {',
+         'extern int hle_online_pickup_allowed(void *);\nextern void hle_online_pickup_taken(void *, void *);\n'
+         'void func_00196590(Obj *obj, Rider *rider) {\n    if (!hle_online_pickup_allowed(rider)) return;'),
+        ('text', '    obj->x8->x4 = 0;',
+         '    obj->x8->x4 = 0;\n    hle_online_pickup_taken(obj, rider);')],
     # Online: no random start swap of the human (port/hle/puppet.c hle_puppet_keep_grid), so every
     # PC has the same grid and no two riders share a gate.
     'unsorted/0011AEC0.c': [
@@ -546,9 +553,9 @@ PATCHES['unsorted/001EB1D8.cpp'] += [
     ('text', '        PlayMenuBackLegacy(&D_004C6D98_M);\n',
      '        PlayMenuBackLegacy(&D_004C6D98_M);\n        port_options_row = 0;\n'),
     ('text', 'func_001F5EE8_M(1,0,0,530,90 + index * 10,D_0029E070_M[index+1],192);',
-     'func_001F5EE8_M(1,0,0,530,90 + index * 10,port_options_label(D_0029E070_M[index+1],index),192);'),
+     'func_001F5EE8_M(1,0,0,530,90 + index * 10,port_options_label(D_0029E070_M[index ? index : 10],index),192);'),
     ('text', 'func_001F5EE8_M(1,selected,style,530,90 + index * 10,D_0029E070_M[index+1],255);',
-     'func_001F5EE8_M(1,selected,style,530,90 + index * 10,port_options_label(D_0029E070_M[index+1],index),255);'),
+     'func_001F5EE8_M(1,selected,style,530,90 + index * 10,port_options_label(D_0029E070_M[index ? index : 10],index),255);'),
     ('text', '(u128)0x5F5245544E455F53UL);\n            }\n            break;\n        }\n',
      '(u128)0x5F5245544E455F53UL);\n            }\n            break;\n'
      '        case 9:\n'
@@ -559,6 +566,9 @@ PATCHES['unsorted/001EB1D8.cpp'] += [
      '            func_001F57D0_M(9001,1);\n'
      '            break;\n'
      '        }\n'),
+    ('text', 'if (D_004225A0_M.x12198 == 0) disabled[5] = 1;', 'if (D_004225A0_M.x12198 == 0) disabled[6] = 1;'),
+    ('text', 'if (D_004225A0_M.x1219F == 0) disabled[4] = 1;', 'if (D_004225A0_M.x1219F == 0) disabled[5] = 1;'),
+    ('text', 'switch (D_004C6D98_M.x10)', 'switch (D_004C6D98_M.x10 ? D_004C6D98_M.x10 - 1 : 9)'),
     # the page's left/right sounds, as the front end's other value rows play them
     ('text', '        func_001F76B8_M(&D_004C6D98_M);\n    }\n}\n\nextern "C" {\ntypedef struct { char bytes[48]; } LocalItems__w1;',
      '        func_001F76B8_M(&D_004C6D98_M);\n    }\n}\n'
@@ -784,6 +794,37 @@ PATCHES['unsorted/001EB1D8.cpp'] += [
      '    if (D_0029DF87__c8)'),
 ]
 
+# Online the shop's own pages run (finding 128): its START commits the bike as retail does
+# (func_0013A170), then online it leaves as the shop's Back does from its header (func_0013C970:
+# the exit page D_00362490, which fades out and closes the popup as cancelled, so func_00139BF8 and
+# func_001F1500 take the shell and its camera back to the rider screen) instead of opening the
+# level chooser; port_online_shell opens the room there. Scripted test runs press
+# START on the shop's first frame (port_online_shop_auto). Both return 0 offline.
+PATCHES['unsorted/0013BA60.cpp'] = PATCHES.get('unsorted/0013BA60.cpp', []) + [
+    ('text', 'extern void func_0013A170();\n',
+     'extern void func_0013A170();\n'
+     'extern "C" int port_online_shop_auto(void);\n'
+     'extern "C" int port_online_shop_commit(void);\n'
+     'extern char D_00362490[];\n'),
+    ('text', '  if(!p->x524 && func_00190D60(input,8,p->x45C)) {\n'
+             '   int other=0, game;\n'
+             '   func_0013A170(); func_00140C38(D_0036B730);\n',
+     '  if(!p->x524 && (func_00190D60(input,8,p->x45C) || port_online_shop_auto())) {\n'
+     '   int other=0, game;\n'
+     '   func_0013A170(); func_00140C38(D_0036B730);\n'
+     '   if(port_online_shop_commit()) { func_001C57A8(D_004B2A90,(u128)0x5443454C45535F53UL); func_00190660(&D_003F52D0,D_00362490); return; }\n'),
+]
+
+# Online the shop's BIKES page starts on the setup's bike (the player's last choice, else the
+# rider's default: online_menu.c shop_prepare), as the career's shop does (func_0013A270), not on
+# the list's first: a pro who changes nothing keeps the pro's own bike (finding 128).
+PATCHES['unsorted/00139BF8.c'] = PATCHES.get('unsorted/00139BF8.c', []) + [
+    ('text', '        func_0013CDB0(&D_00365800);\n    }\n',
+     '        func_0013CDB0(&D_00365800);\n        if (port_online_single_race()) func_0013A270();\n    }\n'),
+    ('text', 'extern void func_0013A270(void);\n',
+     'extern void func_0013A270(void);\nextern int port_online_single_race(void);\n'),
+]
+
 # The stock level chooser accepts the host's track only; guests retain the same shop exit.
 PATCHES['unsorted/001F8920.c'] = PATCHES.get('unsorted/001F8920.c', []) + [
     ('text', 'void func_001F8920(struct Race *race)\n{',
@@ -841,8 +882,14 @@ PATCHES['unsorted/00148BE8.c'] = PATCHES.get('unsorted/00148BE8.c', []) + [
      'extern void hle_online_watch_camera(void *);\nvoid func_00148BE8(Object *s,int arg1) {\n hle_online_watch_camera(s);'),
 ]
 
-# The pause menu runs outside the race loop; its builder marks it paused until re-entry.
-PATCHES['unsorted/001B40A0.c'] = PATCHES.get('unsorted/001B40A0.c', []) + [
-    ('text', 'int func_001B40A0(Obj *arg0)\n{',
-     'extern void hle_online_watch_resume(void);\nint func_001B40A0(Obj *arg0)\n{\n    hle_online_watch_resume();'),
+# A race runs (fps.h port_loop_frame, finding 159): the race world's update, every unpaused frame of
+# the race's loop and in its load (func_0019C868); the shell's frame clears it. (func_001B40A0 itself
+# is NONMATCHING C: the core runs its recompiled asm, so a patch there never runs; finding 165.)
+# Online rooms (online.c hle_online_loop_frame, finding 165): START ends the race loop and the pause
+# menu runs in the front end; the loop's first frame after RESUME lets the watching camera go
+# (finding 122) and repeats a leave that came while the menu was up.
+PATCHES['unsorted/0016C0C8.c'] = PATCHES.get('unsorted/0016C0C8.c', []) + [
+    ('text', 'void func_0016C0C8(Obj *obj)\n{',
+     'extern void port_loop_frame(int);\nextern void hle_online_loop_frame(void);\n'
+     'void func_0016C0C8(Obj *obj)\n{\n    port_loop_frame(1);\n    hle_online_loop_frame();'),
 ]

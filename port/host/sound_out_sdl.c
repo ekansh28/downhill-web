@@ -1,4 +1,4 @@
-/* Host side of the 989snd output (finding 022, phase 2 part C, finding 075), the one sound output
+/* Host side of the 989snd output (finding 022, phase 2 part C, finding 081), the one sound output
    on every platform: an SDL3 audio device stream (WASAPI under it on Windows, Core Audio on macOS,
    PipeWire/PulseAudio/ALSA on Linux, AAudio on Android). The mixer (port/hle/sound.c) renders game
    time and hands its PCM over with host_sound_write; nothing here affects what the game can
@@ -377,6 +377,10 @@ static void host_start(void)
             hle_log("989snd: no SDL audio device (%s)\n", SDL_GetError());
         return;
     }
+    /* DHD_SND_MUTE=1 (tests, finding 139): the device runs and the counters count, but it plays
+       silence, so a check on the hidden desktop measures the queue without sound in the room. */
+    if (getenv("DHD_SND_MUTE") && atoi(getenv("DHD_SND_MUTE")))
+        SDL_SetAudioStreamGain(stream, 0.0f);
     voice_open();   /* the voice chat's thread: the microphone, the encoder (voice.c) */
     SDL_ResumeAudioStreamDevice(stream);
     {

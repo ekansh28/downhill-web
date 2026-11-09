@@ -10,7 +10,9 @@
    - the texture packs: a decoded texture's replacement is its pack's (texpack_view), else its
      sharp font; their memory budget is half the device's dedicated memory (DXGI's
      DedicatedVideoMemory, gpu_rust.c's device.memory), or 1 GB when it is unknown; the scale
-     limit counts the same memory (native_scale_hold), and DHD_SCALE_MAX publishes it;
+     limit counts the same memory, plus half the shared memory on an integrated GPU (under 1 GiB
+     dedicated; native_scale_hold), DHD_SCALE_MAX publishes it (and
+     DHD_SCALE_MAX_REASON why), host_service_gs_scale the scale in use;
    - the window: its size (gpu_rust.c's window_size: the GsWindow's own function) for
      DHD_SCALE=window (native_window_height) and for each present, pacing (pacing_present,
      not under DHD_INTERP), dhdr_surface_present and the present counts.
@@ -67,9 +69,11 @@ static void native_present(Native *n)
     static int spikes = -1;
     if (spikes < 0) spikes = getenv("DHD_SPIKES") != NULL;
     double start = spikes ? host_wall_seconds() : 0;
-    double rs = native_rstat_start();
+    touch_present(p->surface);  /* drawn in the present pass */
+    double rs = native_rstat_start(), inside = perf_log_on() ? host_wall_seconds() : 0;
     int drawn = native_present_draw(n, p->surface, w, h, n->resize != 0);
     native_rstat_add(RSTAT_PRESENT, rs);
+    if (inside) perf_present_wait(host_wall_seconds() - inside);  /* the acquire: held by the GPU or the display */
     double ready = spikes ? host_wall_seconds() : 0;
     if (drawn || n->display_width) n->resize = 0;   /* without a picture yet nothing was configured */
     if (drawn <= 0) return;   /* failed, or skipped: no picture yet, timeout */
@@ -78,12 +82,16 @@ static void native_present(Native *n)
         NativeRect cut;
         native_present_rect(n, w, h, viewport, &cut);
         gs_picture_rect(cut.left, cut.top, cut.right, cut.bottom, (int)w, (int)h);
+        perf_render_size(n->interp ? "native interpolated" : "native", n->scale, n->display_width, n->display_height, w, h,
+                         (unsigned)(cut.right - cut.left), (unsigned)(cut.bottom - cut.top));
     }
     rs = native_rstat_start();
     if (!n->interp) pacing_present(n->present_due, n->present_began);  /* holds the picture to its due time */
     native_rstat_add(RSTAT_PACE, rs);
     rs = native_rstat_start();
-    counter_present(p->surface);
+    inside = perf_log_on() ? host_wall_seconds() : 0;
+    counter_present(p->surface, 1);
+    if (inside) perf_present_wait(host_wall_seconds() - inside);  /* the present call itself */
     native_rstat_add(RSTAT_SHOW, rs);
     native_note_presented(n);
     if (spikes) {
@@ -155,6 +163,14 @@ static void native_surface_reset(Native *n)
 /* The display read: dhdr_native_read_finish waits for the map itself. */
 static int native_read_wait(void) { return 1; }
 
+/* A present failed (native_present_draw): a lost device ends the game (gpu_rust.c, finding 171). */
+static void native_device_lost(void) { device_lost_check(); }
+
+/* PC SETTINGS' Resolution row (port/hle/pc_settings.c): the scale the pictures are drawn at
+   (asked 0) or the one asked for (asked 1: DHD_SCALE's, or the window's match before the limit),
+   native_scale_now's; 0 before the first picture and without this renderer. */
+int host_service_gs_scale(int asked) { return (int)native_scale_now[asked ? 1 : 0]; }
+
 /* ---- creation (EE thread, from rust_init) ---- */
 
 /* 1: the native renderer is installed on g (native_install ran); 0: unavailable, g keeps the exact
@@ -162,7 +178,32 @@ static int native_read_wait(void) { return 1; }
 static int native_init(Gs *g, Rust *exact)
 {
     double start;
-    Native *n = native_create_rust(exact, device.memory, &start);   /* the scale limit with the card's memory */
+    uint64_t scale_memory = device.memory;
+    /* An integrated GPU (wgpu's adapter kind, dhdr_perf_read's word 5: 1) draws its frame and Z
+       buffers in shared system memory (DXGI's SharedSystemMemory): the scale's budget counts half
+       of that too, so it isn't held to the small dedicated slice (a Ryzen iGPU with 512 MiB
+       dedicated ran 8x well). A discrete card keeps its dedicated memory only, however small;
+       texture packs keep their budget. */
+    uint64_t gpu_info[6] = {0};
+    dhdr_perf_read(gpu_info, 6);
+    if (gpu_info[5] == 1 && device.memory && device.shared) {
+        scale_memory = device.memory + device.shared / 2;
+        fprintf(stderr, "gs: integrated GPU: the resolution scale's memory counts shared memory too (%llu MiB dedicated, "
+                "half of %llu MiB shared)\n", (unsigned long long)(device.memory >> 20),
+                (unsigned long long)(device.shared >> 20));
+    }
+    /* Developer measurements: DHD_SCALE_MEMORY_MB overrides only the scale guard; texture packs
+       retain their ordinary budget. */
+    const char *memory_mb = getenv("DHD_SCALE_MEMORY_MB");
+    if (memory_mb) {
+        char *end;
+        unsigned long long mb = strtoull(memory_mb, &end, 10);
+        if (end != memory_mb && !*end && mb > 0 && mb <= 65536) {
+            scale_memory = (uint64_t)mb << 20;
+            fprintf(stderr, "gs: scale memory budget override %llu MiB (DHD_SCALE_MEMORY_MB)\n", mb);
+        } else fprintf(stderr, "gs: invalid DHD_SCALE_MEMORY_MB; using adapter memory\n");
+    }
+    Native *n = native_create_rust(exact, scale_memory, &start);
     if (!n) return 0;
     /* A texture pack (dhd.ini texture_pack, textures): its default budget is half the card's memory. */
     n->texpack = texpack_open(&n->replace, device.memory);
@@ -171,6 +212,11 @@ static int native_init(Gs *g, Rust *exact)
     char most[4];
     snprintf(most, sizeof most, "%u", n->scale_limit);
     host_putenv_s("DHD_SCALE_MAX", most);
+    /* and why it is less than 8: "memory" (graphics memory), "texture" (the largest texture) or
+       "phone" (NATIVE_PHONE_SCALE_MAX) */
+    host_putenv_s("DHD_SCALE_MAX_REASON", n->scale_reason == NATIVE_SCALE_MEMORY ? "memory" :
+                  n->scale_reason == NATIVE_SCALE_TEXTURE ? "texture" :
+                  n->scale_reason == NATIVE_SCALE_PHONE ? "phone" : "");
     fprintf(stderr, "gs native: WebGPU shaders and pipelines built in %.2f s\n", host_wall_seconds() - start);
     native_install(g, exact, n, "WebGPU");
     fprintf(stderr, "gs native: GS blending %s\n", n->dual ? "with dual-source blending" :

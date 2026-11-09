@@ -22,6 +22,7 @@
 #include "host_api.h"
 #include "../hle/hle.h"
 #include "../hle/text_input.h"
+#include "../hle/controls_table.h"
 #include "../gs/present.h"
 
 #include <SDL3/SDL.h>
@@ -38,21 +39,16 @@ static void (*request_fn)(void *); /* the pending request (under slot_lock) */
 static void *request_arg;
 static SDL_Semaphore *request_done;
 
-/* Keys that are not letters, by the Windows virtual-key code the game's tables use (keyboard.c). */
+/* Keys that are not letters, by the Windows virtual-key code of the US key at their place, which
+   the game's tables use (keyboard.c): Esc and every key a binding can take (controls_table.h, by
+   its scan code; finding 157). The keypad's Enter is Enter. */
 static unsigned special_key(SDL_Scancode sc)
 {
-    switch (sc) {
-    case SDL_SCANCODE_LEFT: return 0x25;
-    case SDL_SCANCODE_UP: return 0x26;
-    case SDL_SCANCODE_RIGHT: return 0x27;
-    case SDL_SCANCODE_DOWN: return 0x28;
-    case SDL_SCANCODE_SPACE: return 0x20;
-    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: return 0x0D;
-    case SDL_SCANCODE_ESCAPE: return 0x1B;
-    case SDL_SCANCODE_TAB: return 0x09;
-    case SDL_SCANCODE_BACKSPACE: return 0x08;
-    default: return 0;
-    }
+    if (sc == SDL_SCANCODE_ESCAPE) return 0x1B;
+    if (sc == SDL_SCANCODE_KP_ENTER) sc = SDL_SCANCODE_RETURN;
+    for (int i = 0; i < CONTROL_KEYS; i++)
+        if (control_keys[i].scancode == sc) return control_keys[i].vk;
+    return 0;
 }
 
 /* The control character Windows sent as WM_CHAR for the key (0: none). */
@@ -118,6 +114,7 @@ static void text_event(const SDL_TextInputEvent *t)
 
 static void dispatch(const SDL_Event *e)
 {
+    if (touch_host_event(e)) return;  /* the touch controls' (touch_host.c): Back, a touch's mouse in a race */
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
@@ -155,16 +152,6 @@ static void dispatch(const SDL_Event *e)
     case SDL_EVENT_GAMEPAD_REMAPPED:
         gamepad_device(PADDEV_REMAPPED, (unsigned)e->gdevice.which);
         break;
-#ifdef __ANDROID__
-    /* The on-screen controls (touch.c, finding 141): SDL's finger events, kept apart from the
-       mouse path below, which only ever sees one finger. */
-    case SDL_EVENT_FINGER_DOWN:
-    case SDL_EVENT_FINGER_MOTION:
-    case SDL_EVENT_FINGER_UP:
-    case SDL_EVENT_FINGER_CANCELED:
-        touch_event(e);
-        break;
-#endif
     default:
         break;
     }
@@ -244,6 +231,7 @@ int sdl_host_main(int (*game)(void *), void *arg)
         for (int got = SDL_WaitEventTimeout(&e, 4); got; got = SDL_PollEvent(&e)) dispatch(&e);
 #endif
         gamepad_thread_update();
+        touch_host_tick();
         gs_window_tick();
     }
     int code = 0;

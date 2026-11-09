@@ -36,6 +36,22 @@ float port_fov_x = 1.0f;  /* s: 1, or (4/3) / aspect */
 
 static int widescreen;
 static double aspect = 4.0 / 3.0;
+/* Card mode (finding 140): the renderer shows the full-screen 2D pictures (loading cards, the
+   memory card warning) at 4:3, so the game's 2D in them is drawn as at 4:3, unmapped. The host says
+   at each vsync (host_frame_video) whether the next field is drawn for a card. */
+static int card_2d;
+static int card_setup;  /* the loading card is being drawn (port_card_setup) */
+
+void widescreen_card_mode(int on) { card_2d = on; }
+
+/* The loading card's setup (func_00182D78, port/patches_widescreen.py): it draws the card and its
+   text ("Single Event", the track; "Bike Shop") for eight frames, and the loading thread then sends
+   the same packets again until the level is loaded. The card is shown 4:3, so its 2D is drawn as
+   at 4:3, unmapped; card mode, which follows the picture, would come too late for it. */
+void port_card_setup(int on) { card_setup = on; }
+
+/* The 2D draw code's X is mapped: widescreen, and not a card. */
+static int map_2d(void) { return widescreen && !card_2d && !card_setup; }
 
 /* The game's views (func_0023D650, func_0023D8D8): an entry per view, its View first the focal
    length in pixels (x0, the X field of view, already times s) and the size in pixels. */
@@ -174,19 +190,25 @@ void port_widescreen_apply(void)
 
 /* The bike shop builds its HUD and shadow at run time: when the shop's block is set up (the
    halfword at 0xA095D0 reads 2), widen the HUD bars and the shadow, as the patch's conditional
-   lines do (for 16:9: 1.33, 1.33 and -111). Writing 0xA095D0 itself ends the condition. The
-   shadow word is -95.886 in retail (C2BFC5EA, logged in round 40) and -111 in the 16:9 patch;
-   other shapes take the line through those two points in 1/s. The game writes the bars back each
-   field, as on PCSX2, whose patch is applied every field too. */
+   lines do (for 16:9: 1.33, 1.33 and -111). Writing 0xA095D0 itself ends the condition. The game
+   writes the bars back each field, as on PCSX2, whose patch is applied every field too.
+   The shadow word is no width: 0xA60030 is a VIF UNPACK V3-32 of the dark panel behind the rider,
+   and 0xA60038 its first vertex's second coordinate, the panel's far corner: -95.886 in retail
+   (C2BFC5EA, logged in round 40), -111 in the 16:9 patch, which moves the corner past the wider
+   view's left side. Up to 16:9 it takes the line through those two points in 1/s; wider shapes
+   keep -111, which leaves the corner past the left side up to 5.9:1 (more than the 4:1 cap). Further
+   along the line the vertex crosses the camera's plane (between -111 and -116) and the panel is
+   drawn mirrored across the picture, over the rider, from about 2:1 on (finding 154). */
 void host_widescreen_vsync(void)
 {
     if (!widescreen || *(volatile uint16_t *)(uintptr_t)(PS2_RAM_BASE + 0xA095D0) != 2) return;
     volatile uint32_t *top = (volatile uint32_t *)(uintptr_t)(PS2_RAM_BASE + 0xA095D0);
     volatile uint32_t *bottom = (volatile uint32_t *)(uintptr_t)(PS2_RAM_BASE + 0xA09610);
     volatile uint32_t *shadow = (volatile uint32_t *)(uintptr_t)(PS2_RAM_BASE + 0xA60038);
+    float wider = fminf(1.0f / port_fov_x, 4.0f / 3.0f);  /* how much wider than 4:3 the corner follows */
     *top = float_bits(1.0f / port_fov_x);     /* top HUD width */
     *bottom = float_bits(1.0f / port_fov_x);  /* bottom HUD width */
-    *shadow = float_bits(-95.886f - (111.0f - 95.886f) * 3.0f * (1.0f / port_fov_x - 1.0f));  /* shadow width */
+    *shadow = float_bits(-95.886f - (111.0f - 95.886f) * 3.0f * (wider - 1.0f));  /* the panel's corner */
 }
 
 /* ---- the 2D draw code's X (port/patches_widescreen.py) ---- */
@@ -207,7 +229,7 @@ static int scaled(double v) { return (int)floor(v + 0.5); }
 int port_ws_point(int x)
 {
     int cx, w;
-    if (!widescreen || !view_size(0, &cx, &w) || abs(x - cx) * 2 >= w) return x;
+    if (!map_2d() || !view_size(0, &cx, &w) || abs(x - cx) * 2 >= w) return x;
     return cx + scaled((x - cx) * port_fov_x);
 }
 
@@ -220,7 +242,7 @@ void port_ws_span(int *x, int *w)
 }
 
 /* A width (or height-free size) of a 2D thing, so it keeps its shape. */
-int port_ws_size(int w) { return widescreen ? scaled(w * port_fov_x) : w; }
+int port_ws_size(int w) { return map_2d() ? scaled(w * port_fov_x) : w; }
 
 /* The side a HUD element at x (GS pixels) belongs to, in GS pixels: the left or right side of
    the view, or its centre. */
@@ -236,9 +258,38 @@ static int anchor(int view, int x)
    side as it was (anchor). */
 int port_ws_hud_point(int view, int ref, int x)
 {
-    if (!widescreen) return x;
+    if (!map_2d()) return x;
     int a = anchor(view, ref);
     return a + scaled((x - a) * port_fov_x);
+}
+
+/* ---- the touch controls' HUD (finding 141, touch_field.c) ----
+   The HUD's own calls are the hook: each says the race HUD is drawn (touch_hud_seen), and while
+   the touch controls are on (touch_hud_place) the speedometer and the energy arrows above it, the
+   cluster in the bottom-right corner where the right thumb works, move to the top corner: the
+   left one for the right hand (the arrows beside the speedometer), the right one for the left
+   hand, where the left side's pieces (the track bar, the place) also move across. Places are
+   fractions of the 4:3 view (u across from the left, v down from the top); widescreen then
+   anchors each piece to its new side as before. DHD_TOUCH_HUD_SHIFT="su,sv,au,av" overrides the
+   right hand's shifts of the speedometer and the arrows (check 7 tunes them). */
+static void touch_hud_move(float u, float v, float *du, float *dv)
+{
+    static HleEnv env;
+    static const char *read;
+    static float shift[4] = {-0.75f, -0.75f, -0.65f, -0.67f};
+    const char *text = hle_env(&env, "DHD_TOUCH_HUD_SHIFT");
+    if (text != read) {
+        read = text;
+        float s[4];
+        if (text && sscanf(text, "%f,%f,%f,%f", &s[0], &s[1], &s[2], &s[3]) == 4) memcpy(shift, s, sizeof shift);
+    }
+    *du = *dv = 0;
+    if (u > 2.0f / 3 && v > 0.62f) {   /* the bottom-right cluster: the arrows above 0.755, the speedometer below */
+        int arrows = v < 0.755f;
+        *dv = arrows ? shift[3] : shift[1];
+        if (touch_hud_place == 1) *du = arrows ? shift[2] : shift[0];
+        else *du = arrows ? -0.21f : 0;   /* left hand: stays right, the arrows to its left */
+    } else if (touch_hud_place == 2 && u < 1.0f / 3) *du = 1 - 2 * u;   /* left hand: the left side mirrors */
 }
 
 /* The HUD's 3D pieces: local is the offset from the camera (x right, y forward, z up) that
@@ -246,10 +297,18 @@ int port_ws_hud_point(int view, int ref, int x)
    width the view gained at its depth. */
 void port_ws_hud_offset(int view, float *local)
 {
-    if (!widescreen || view < 0 || view >= 32 || !D_0075A9D0[view].view) return;
+    touch_hud_seen = 1;
+    if (view < 0 || view >= 32 || !D_0075A9D0[view].view) return;
     const WsView *v = D_0075A9D0[view].view;
     float depth = local[1], focal = v->x0, half = v->width * 0.5f;
     if (depth <= 0 || focal <= 0 || half <= 0) return;
+    if (touch_hud_place) {   /* the piece's place in the 4:3 view; its height is three quarters of its width */
+        float span = depth * half / (focal / port_fov_x), du, dv;
+        touch_hud_move((local[0] / span + 1) * 0.5f, (1 - local[2] / (span * 0.75f)) * 0.5f, &du, &dv);
+        local[0] += du * 2 * span;
+        local[2] -= dv * 2 * span * 0.75f;
+    }
+    if (!widescreen) return;
     /* where it is across the 4:3 view, -1 left side .. 1 right side */
     float u = local[0] * (focal / port_fov_x) / (depth * half);
     if (fabsf(u) <= 1.0f / 3) return;
@@ -269,7 +328,7 @@ void port_ws_text_begin(int view, int ref)
 {
     int cx, w;
     text_open = 0;
-    if (!widescreen || !view_size(view, &cx, &w)) return;
+    if (!map_2d() || !view_size(view, &cx, &w)) return;
     int w16 = w * 16;
     text_anchor = w16 / 2;
     if (hud_text) text_anchor = ref < w16 / 3 ? 0 : ref > w16 * 2 / 3 ? w16 : w16 / 2;
@@ -281,7 +340,7 @@ void port_ws_text_end(void) { text_open = 0; }
 /* A glyph's left side (pen, 1/16 pixels from the view's left side) in a view w pixels wide. */
 int port_ws_glyph_x(int w, int pen)
 {
-    if (!widescreen) return pen;
+    if (!map_2d()) return pen;
     int a = text_open ? text_anchor : w * 8;
     return a + scaled((pen - a) * port_fov_x);
 }
@@ -289,9 +348,24 @@ int port_ws_glyph_x(int w, int pen)
 /* A glyph's width, 1/16 pixels. */
 int port_ws_glyph_w(int width) { return port_ws_size(width); }
 
+/* A HUD string's point (x, y in the view's pixels) as the touch controls' HUD has it. */
+static void touch_hud_text(int view, int *x, int *y)
+{
+    touch_hud_seen = 1;
+    int w, h;
+    if (!touch_hud_place || view < 0 || view >= 32 || !D_0075A9D0[view].view) return;
+    func_0023D650(view, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    float du, dv;
+    touch_hud_move((float)*x / w, (float)*y / h, &du, &dv);
+    *x += scaled(du * w);
+    *y += scaled(dv * h);
+}
+
 /* The HUD's text calls (port/patches_widescreen.py renames them in its units). */
 void port_hud_text_c(int font, int view, int x, int y, const char *text)
 {
+    touch_hud_text(view, &x, &y);
     hud_text = 1;
     func_0020F9F0(font, view, x, y, text);
     hud_text = 0;
@@ -299,6 +373,7 @@ void port_hud_text_c(int font, int view, int x, int y, const char *text)
 
 void port_hud_text_l(int font, int view, int x, int y, const char *text)
 {
+    touch_hud_text(view, &x, &y);
     hud_text = 1;
     func_0020F9A8(font, view, x, y, text);
     hud_text = 0;

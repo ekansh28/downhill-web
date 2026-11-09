@@ -3,9 +3,9 @@
 
    Races use state sync (findings 041, 044): every PC runs its own one-player race and sends
    snapshots of the riders it owns (STATE frames) and hits it deals (EVENT frames) with
-   net_send_frame, through a relay over a WebSocket; the others' riders are puppets
-   (port/hle/online.c, port/hle/puppet.c). A background thread keeps the connection (lobby JSON,
-   binary race frames, pings). */
+   net_send_frame, through the room's SFU association (port/render/net/src/sfu.rs); the others'
+   riders are puppets (port/hle/online.c, port/hle/puppet.c). Background threads keep the room's
+   WebSocket (lobby JSON, binary pings) and the SFU association. */
 #ifndef NET_H
 #define NET_H
 
@@ -29,6 +29,8 @@ typedef struct {
     char race_state[12], dnf_reason[16];
     long long finish_ticks;     /* -1 when absent */
     int place;
+    char region[8];            /* their region as Cloudflare places them ("EU"...), "" unknown;
+                                  never their country (finding 135) */
 } NetMember;
 
 typedef struct {
@@ -77,14 +79,10 @@ typedef struct {
     unsigned char rotation[64];
     int last_race_id, last_race_track, nresults;
     NetResult result[NET_MAX_SLOTS];
-    /* Rejoining (finding 140). New fields go here, at the end: the game, the x64 host and the
-       browser's net module (port/web/www/net.js copies web_net_lobby_size() bytes) all copy this
-       struct as it is, so the fields above keep their offsets. */
-    unsigned members_reconnecting;  /* bit i: member[i] dropped; the server holds its lobby slot */
-    unsigned racers_away;      /* bit s: racer s dropped mid-race ("away"); the server holds its slot
-                                  until it comes "back" or has "left". Its rider is not driven meanwhile. */
-    int rejoining;             /* this PC lost the race's connection and is rejoining its slot: frames
-                                  are not sent; offline is set only if that fails */
+    /* Where this PC and the room are (finding 135), "" unknown or an older server: the Cloudflare
+       location this connection reached, this PC's country and continent as Cloudflare sees them,
+       the location the room runs in and its region ("EU", "NA", "ASIA"...). */
+    char edge_colo[8], country[4], continent[4], room_colo[8], room_region[8];
 } NetLobby;
 
 /* Host settings; fields at -1 (room_name NULL) are left as they are. */
@@ -100,6 +98,9 @@ typedef struct {
     char phase[16];
     double race_started_at, finish_ends_at, next_race_at;
     int full;
+    char region[8], colo[8];   /* where the room runs ("EU"...; finding 135), "" unknown */
+    int timed;                 /* the times above can be counted against net_server_ms(): the list
+                                  came with the server's "now", or a room's pings set the clock */
 } NetLobbyInfo;
 
 /* base_url: "wss://host" or "ws://127.0.0.1:8787". version: the build's version string (the
@@ -128,6 +129,9 @@ double net_seconds(void);                          /* the clock start_at uses */
    same moment on every PC to a few ms, for starting the race together. */
 double net_server_ms(void);
 int net_ping_ms(void);                             /* in a room, else -1 */
+/* In a race: how old the other riders' snapshots are when they arrive (the slowest player's
+   median, ms; what the puppets are predicted across), else -1 (finding 169). */
+int net_riders_ms(void);
 
 /* ---- text chat (finding 139) ----
    Anyone in the room or a race says a line (1-120 characters once the server has cleaned it; 5
@@ -160,11 +164,12 @@ void net_get_chat(NetChat *out);                   /* a copy, for the UI */
 int net_racing(void);
 int net_local_slot(void);
 
-/* Binary frames the relay forwards as they are to every other racer: a snapshot of riders this
-   PC owns, an event it decided for another PC's rider. A frame is type, slot (the server sets
-   it), payload. */
-/* NET_FRAME_MAX: a STATE frame carries all of a player's riders (up to ten snapshots of at most
-   255 bytes); the server's MAX_BINARY_BYTES is the same. */
+/* Race frames, carried by the Cloudflare Realtime SFU to every other racer (finding 158): a STATE
+   bundle of riders this PC owns, an event it decided for another PC's rider. A frame is type, slot
+   (the receiver sets it from the channel), payload. */
+/* NET_FRAME_MAX: the largest frame accepted. A STATE frame is one bundle of at most
+   STATE_BUNDLE_MAX bytes (port/hle/state_bundle.h: as many riders as fit one datagram, finding
+   169); a PC with more riders sends several. The server's MAX_BINARY_BYTES is the same. */
 enum { NET_FRAME_STATE = 5, NET_FRAME_EVENT = 6, NET_FRAME_MAX = 3072, NET_RELAY_QUEUE = 128 };
 /* The race's pings (client.c): type, slot, the send time; the server answers PONG with the rest
    as it was. */

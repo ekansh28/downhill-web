@@ -267,6 +267,10 @@ pub struct DhdrSurfaceInfo {
     pub extent: [u32; 2],
 }
 
+/// `DhdrPicture::display_surface` when the display is off (PMODE has no read circuit on, as after
+/// a GS reset): the picture is black, as the PS2 shows it (finding 160). -1: none, the last stays.
+pub const DISPLAY_OFF: i32 = -2;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DhdrPicture {
@@ -314,7 +318,9 @@ pub struct DhdrPresentRect {
     pub window_w: u32,
     pub window_h: u32,
     pub resize: u32,
-    pub pad: u32,
+    /// Nonzero: fill the window around `cut` with the picture blurred and darkened (widescreen's
+    /// 4:3 pictures, finding 140).
+    pub fill: u32,
 }
 
 // ---------------- function signatures ----------------
@@ -352,6 +358,9 @@ pub type dhdr_surface_destroy_fn = unsafe extern "C" fn(s: *mut DhdrSurface);
 pub type dhdr_surface_usage_fn = unsafe extern "C" fn(s: *const DhdrSurface) -> u32;
 pub type dhdr_present_exact_fn = unsafe extern "C" fn(s: *mut DhdrSurface, x: *mut DhdrExact, pixels: *const u32,
                                                       w: u32, h: u32, window_w: u32, window_h: u32) -> i32;
+pub type dhdr_surface_counter_fn = unsafe extern "C" fn(s: *mut DhdrSurface, enabled: i32, ms: i32, riders: i32, seconds: f64);
+pub type dhdr_surface_touch_fn =
+    unsafe extern "C" fn(s: *mut DhdrSurface, items: *const f32, count: u32, width_mm: f32, height_mm: f32);
 pub type dhdr_surface_present_fn = unsafe extern "C" fn(s: *mut DhdrSurface);
 
 pub type dhdr_native_create_fn = unsafe extern "C" fn(flags: u32) -> *mut DhdrNative;
@@ -444,5 +453,5 @@ layout!(DhdrPictureResult, size 80, align 8, {
     self_copy_px @ 32, copies @ 40, copy_px @ 48, imports @ 56, import_px @ 64, two_pass_draws @ 72,
 });
 layout!(DhdrPresentRect, size 48, align 4, {
-    rect @ 0, cut @ 16, window_w @ 32, window_h @ 36, resize @ 40, pad @ 44,
+    rect @ 0, cut @ 16, window_w @ 32, window_h @ 36, resize @ 40, fill @ 44,
 });

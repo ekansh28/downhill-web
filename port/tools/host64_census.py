@@ -55,9 +55,10 @@ HOST_UNITS = [
     'port/host/host_sdl.c', 'port/host/host_win32.c', 'port/host/sound_out_sdl.c', 'port/host/voice.c', 'port/host/sdl_host.c',
     'port/runtime/sha256.c',
     'port/hle/host.c', 'port/hle/graphics_queue.c', 'port/hle/vif.c', 'port/runtime/vu0_interp.c',
-    'port/gs/memory.c', 'port/gs/gs.c', 'port/gs/display.c', 'port/gs/present.c', 'port/gs/gpu_rust.c',
-    'port/gs/texpack.c', 'port/gs/font_sharp.c', 'port/gs/capture.c', 'port/gs/replay.c',
-    'port/hle/gamepad.c', 'port/hle/keyboard.c', 'port/hle/controls.c', 'port/hle/text_input.c', 'port/hle/movie.c',
+    'port/gs/memory.c', 'port/gs/gs.c', 'port/gs/display.c', 'port/gs/present.c', 'port/gs/gpu_rust.c', 'port/gs/perf_log.c',
+    'port/gs/texpack.c', 'port/gs/font_sharp.c', 'port/gs/button_icons.c', 'port/gs/capture.c', 'port/gs/replay.c',
+    'port/hle/gamepad.c', 'port/hle/keyboard.c', 'port/hle/text_input.c', 'port/hle/movie.c',
+    'port/hle/touch.c', 'port/host/touch_host.c',
     'port/hle/launcher_link.c', 'port/hle/fps.c',
     'port/net/client.c', 'port/net/hash.c', 'port/net/json.c', 'port/net/join.c', 'port/net/net.c',
 ] + ['port/third_party/libmpeg2/%s.c' % n for n in (

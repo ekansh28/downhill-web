@@ -164,6 +164,8 @@ export async function createNet(bytes, guest, say, host = {}) {
   const muted = new Int8Array(SLOTS);
 
   const services = {
+    // Online is offered in this browser build (upstream turns it off there, finding 143): net.c says 1.
+    host_service_net_offered: () => x.host_service_net_offered(),
     host_service_net_init: (a, b, c, d) => {
       base = a ? dec.decode(guest.bytes(a, guest.strlen(a))).replace(/\/+$/, '') : '';
       withStrings([a, b, c, d], x.host_service_net_init);

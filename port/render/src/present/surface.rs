@@ -7,7 +7,8 @@
 //! Wayland's window, Android's ANativeWindow, Apple's CAMetalLayer), in RGBA8Unorm, else BGRA8Unorm
 //! (`surface_format`: whichever the surface offers first in that order; Apple's CAMetalLayer has no
 //! RGBA8), the present pipelines drawing into that format; present mode Immediate > Mailbox > Fifo (`DHDR_PRESENT_NO_TEARING`: no Immediate;
-//! `DHDR_PRESENT_VSYNC`: Fifo); desired maximum frame latency 1; alpha Opaque; usage
+//! `DHDR_PRESENT_VSYNC`: Fifo); desired maximum frame latency 1 with Immediate, 2 with V-Sync
+//! (`frame_latency`); alpha Opaque; usage
 //! RENDER_ATTACHMENT, plus COPY_SRC when the surface offers it (`DHDR_SURFACE_COPY_SRC`, for the
 //! test hook). Configured to the window's size, reconfigured when it changes or the frame is
 //! Outdated / Lost (once; a second Outdated / Lost fails, as C's wgpu_present); Timeout and
@@ -74,6 +75,8 @@ pub struct Surface {
     height: u32,
     pipe: PresentPipe,
     pub counter: super::counter::Counter,
+    /// The touch controls (finding 141): drawn over the picture, under nothing.
+    pub touch: super::touch::TouchOverlay,
     #[cfg(feature = "native")]
     capture: super::counter::Capture,
     own: Option<Own>,
@@ -124,6 +127,10 @@ pub fn surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFo
 fn handle(value: u64, what: &str) -> Result<std::ptr::NonNull<std::ffi::c_void>, String> {
     std::ptr::NonNull::new(value as usize as *mut std::ffi::c_void).ok_or_else(|| format!("NULL {what}"))
 }
+
+/// The last surface's present mode for `dhdr_perf_read` (finding 129): 0 none yet, 1 immediate,
+/// 2 mailbox, 3 fifo, 4 fifo-relaxed.
+pub static PRESENT_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 impl Surface {
     pub const KINDS: &'static [u32] = PLATFORM_KINDS;
@@ -213,6 +220,16 @@ impl Surface {
         } else {
             wgpu::PresentMode::Fifo
         };
+        PRESENT_MODE.store(match present_mode {
+            wgpu::PresentMode::Immediate => 1,
+            wgpu::PresentMode::Mailbox => 2,
+            wgpu::PresentMode::Fifo => 3,
+            wgpu::PresentMode::FifoRelaxed => 4,
+            _ => 0,
+        }, std::sync::atomic::Ordering::Relaxed);
+        crate::host::log(&format!("gs: present mode {present_mode:?} (V-Sync {}; the surface offers {:?})",
+                                  if present_flags & (DHDR_PRESENT_VSYNC | DHDR_PRESENT_NO_TEARING) != 0 { "on" } else { "off" },
+                                  caps.present_modes));
         let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) || caps.alpha_modes.is_empty() {
             wgpu::CompositeAlphaMode::Opaque
         } else {
@@ -220,7 +237,7 @@ impl Surface {
         };
         // COPY_SRC lets the test hook read the presented texture back; not needed otherwise.
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | (caps.usages & wgpu::TextureUsages::COPY_SRC);
-        Ok(Surface { gpu, frame: None, surface, usage, present_mode, alpha_mode, format, width: 0, height: 0, pipe, own: None, counter: super::counter::Counter::default(),
+        Ok(Surface { gpu, frame: None, surface, usage, present_mode, alpha_mode, format, width: 0, height: 0, pipe, own: None, counter: super::counter::Counter::default(), touch: super::touch::TouchOverlay::default(),
             #[cfg(feature = "native")] capture: super::counter::Capture::default() })
     }
 
@@ -243,9 +260,7 @@ impl Surface {
         (self.width, self.height)
     }
 
-    /// DHD_FRAME_LATENCY (1-3, default 1): pictures the swapchain may hold. 1 has the least input
-    /// delay, but each acquire then waits until the compositor (G-Sync, overlays) has released the
-    /// last picture; 2 or 3 give the render thread room when that release is late (stutter tests).
+    /// The frame latency: pictures the swapchain may hold (`frame_latency`).
     fn configure(&mut self, width: u32, height: u32) {
         let max = self.gpu.device.limits().max_texture_dimension_2d;
         let (width, height) = (width.min(max), height.min(max));
@@ -255,7 +270,7 @@ impl Surface {
             width,
             height,
             present_mode: self.present_mode,
-            desired_maximum_frame_latency: frame_latency(),
+            desired_maximum_frame_latency: frame_latency(self.present_mode),
             alpha_mode: self.alpha_mode,
             view_formats: vec![],
         });
@@ -268,6 +283,10 @@ impl Surface {
     /// Occluded); Err failed. The native present pass (native/present.rs) draws through this too.
     pub fn acquire(&mut self, window_w: u32, window_h: u32, reconfigure: bool) -> Result<Option<wgpu::TextureView>, String> {
         self.frame = None; // a frame drawn but never presented is dropped
+        if crate::lost::lost() {
+            // every call is a no-op on a lost device; C asks dhdr_device_lost and ends the game
+            return Err("the GPU device was lost".into());
+        }
         if window_w == 0 || window_h == 0 {
             return Ok(None);
         }
@@ -299,6 +318,7 @@ impl Surface {
                 wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
                     let view = t.texture.create_view(&wgpu::TextureViewDescriptor::default());
                     self.frame = Some(t);
+                    crate::lost::frame_acquired(self.gpu); // DHD_TEST_DEVICE_LOST
                     return Ok(Some(view));
                 }
                 wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
@@ -385,9 +405,11 @@ impl Surface {
         1
     }
 
-    pub fn draw_counter(&mut self) {
+    /// The host overlays over the picture: the touch controls, then the performance counter.
+    pub fn draw_overlays(&mut self) {
         if let Some(frame) = self.frame.as_ref() {
             let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.touch.draw(self.gpu, &target, self.format, self.width, self.height);
             self.counter.draw(self.gpu, &target, self.format, self.width, self.height);
             #[cfg(feature = "native")]
             if self.usage.contains(wgpu::TextureUsages::COPY_SRC) { self.capture.frame(self.gpu, &frame.texture); }
@@ -402,10 +424,19 @@ impl Surface {
     }
 }
 
-/// DHD_FRAME_LATENCY, read once (Surface::configure).
-fn frame_latency() -> u32 {
-    static LATENCY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *LATENCY.get_or_init(|| {
-        std::env::var("DHD_FRAME_LATENCY").ok().and_then(|s| s.trim().parse::<u32>().ok()).map_or(1, |n| n.clamp(1, 3))
-    })
+/// Pictures the swapchain may hold (Surface::configure): DHD_FRAME_LATENCY (1-3, read once), else
+/// 1 with Immediate (V-Sync off: the least input delay) and 2 when the present waits for the display
+/// (Mailbox or Fifo: V-Sync on; finding 139). A latency of 1 makes two buffers: one on the display,
+/// one drawn. A picture that misses a refresh then holds the next acquire until the refresh after
+/// it, so a game that can't keep the display's rate falls to half of it (85 fps on a 120 Hz screen
+/// showed 60), with Mailbox too (DXGI's flip model, Vulkan, Metal's drawables alike). With 2 (three
+/// buffers) Mailbox shows the newest picture at each refresh and Fifo queues one, and the game runs
+/// at its own rate. 1 still has the least delay where the compositor releases late (G-Sync,
+/// overlays: 2 or 3 give the render thread room there; stutter tests).
+fn frame_latency(mode: wgpu::PresentMode) -> u32 {
+    static LATENCY: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let set = *LATENCY.get_or_init(|| {
+        std::env::var("DHD_FRAME_LATENCY").ok().and_then(|s| s.trim().parse::<u32>().ok()).map(|n| n.clamp(1, 3))
+    });
+    set.unwrap_or(if mode == wgpu::PresentMode::Immediate { 1 } else { 2 })
 }

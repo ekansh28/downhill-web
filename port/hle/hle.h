@@ -70,6 +70,7 @@ void host_pad_vibrate(int port, int light, int heavy);  /* the DualShock 2's mot
 void host_widescreen_init(void);  /* DHD_WIDESCREEN: Hor+ field of view, any aspect (widescreen.c) */
 void host_widescreen_vsync(void); /* its live-memory part, once a field */
 double host_widescreen_aspect(void);  /* the widescreen picture's width / height; 0 when off */
+void widescreen_card_mode(int on);   /* the next field's 2D is for a card: unmapped (widescreen.c) */
 void host_display_aware(void);    /* the process sees real pixels (DPI aware), before any window */
 double host_seconds(void);    /* the game clock in seconds: virtual under DHD_FRAME_CLOCK (kernel.c) */
 /* Just-in-time frames (kernel.c): the picture handed on at this VBLANK, when to show it (0: at
@@ -101,10 +102,16 @@ void host_pad_read(int port, HostPad *out);  /* a script if one is set, else the
 int host_pad_script(int player, HostPad *out);  /* DHD_NAV / DHD_AUTOPAD / DHD_RACE_PAD; 0 if none */
 void host_pad_device(int port, HostPad *out);   /* the controller, and for port 0 the keyboard too */
 
-/* keyboard.c: keys (Windows virtual-key codes, down[key] != 0) as a pad, merged into `out`;
-   `riding`: the game's riding controls are on (D_0029E290), the arrows move the left stick. */
-void keyboard_pad(const uint8_t down[256], int riding, double now, HostPad *out);
-const uint8_t *keyboard_keys(int *count);  /* the keys it reads */
+/* A keyboard or controller layout (port/hle/controls_table.h, finding 157): which key or
+   controller input stands for each PS2 button. */
+struct ControlsLayout;
+
+/* keyboard.c: keys (Windows virtual-key codes, down[key] != 0) as a pad by the layout (NULL: the
+   default one), merged into `out`; `riding`: the game's riding controls are on (D_0029E290), the
+   d-pad's keys move the left stick. */
+void keyboard_pad(const struct ControlsLayout *layout, const uint8_t down[256], int riding, double now, HostPad *out);
+/* The keys it reads with the layout (NULL: the default one) into list (49 at most): their count. */
+int keyboard_keys(const struct ControlsLayout *layout, uint8_t *list);
 void keyboard_reset(void);
 int keyboard_game_axis(int raw);           /* the game's reading of a stick byte (-127..127) */
 int keyboard_script(const char *script, double seconds, uint8_t down[256]);  /* DHD_KEYS */
@@ -121,11 +128,31 @@ enum { VKEY_SHIFT = 0x10, VKEY_CONTROL = 0x11, VKEY_MENU = 0x12, VKEY_LWIN = 0x5
 
 /* gamepad.c: controllers through SDL3 (XInput, DirectInput, HID: DualSense, DualShock 4, Switch
    Pro and the generic pads in SDL's mapping database). gamepad_start: 1 if SDL is running. The
-   pads are read on the SDL thread (sdl_host.c: the main thread), which calls gamepad_thread_*. */
+   pads are read on the SDL thread (sdl_host.c: the main thread), which calls gamepad_thread_*.
+   A controller's state by its inputs' places (GamepadRaw: a bit per input id of
+   controls_table.h, the triggers' bytes 0-255, SDL's stick axes: left X, Y, right X, Y), which
+   gamepad_apply turns into the PS2 pad's with a layout and the sticks' dead zone (stick.h). */
+typedef struct {
+    uint32_t buttons;
+    uint8_t trigger[2];
+    int16_t axis[4];
+} GamepadRaw;  /* 16 bytes */
 int gamepad_start(void);
-int gamepad_read(int player, HostPad *out);  /* 0: no controller for that player */
+int gamepad_raw(int player, GamepadRaw *out);  /* 0: no controller for that player */
+void gamepad_apply(const struct ControlsLayout *layout, const GamepadRaw *raw, int dead_zone, HostPad *out);
 void gamepad_vibrate(int player, int light, int heavy);
+/* What a controller's buttons are labelled: for the button icons (port/gs/button_icons.c). */
+enum { PAD_KIND_NONE = 0, PAD_KIND_PLAYSTATION = 1, PAD_KIND_XBOX = 2, PAD_KIND_NINTENDO = 3 };
+int gamepad_kind_of(int type, int south_label);  /* PAD_KIND_* of an SDL_GamepadType and its bottom button's label */
+int gamepad_kind(int player);  /* that player's controller's PAD_KIND_* (NONE without one) */
 enum { PADDEV_ADDED = 1, PADDEV_REMOVED, PADDEV_REMAPPED };
+/* port/host/touch_host.c: the touch controls (finding 141). The SDL thread passes its events
+   (1: the event is the touch controls', not passed on) and calls the tick every pass; host_pad_device
+   merges player 1's touches. */
+union SDL_Event;
+int touch_host_event(const union SDL_Event *e);
+void touch_host_tick(void);
+void touch_host_merge(HostPad *out);
 /* sdl_host.c's SDL thread: the pads' start (1 if up), a device change, and every pass. */
 int gamepad_thread_start(void);
 void gamepad_device(int change, unsigned id);
@@ -136,13 +163,6 @@ void gamepad_thread_update(void);
 int sdl_host_main(int (*game)(void *), void *arg);
 int sdl_host_start(void);
 int sdl_host_run(void (*fn)(void *), void *arg);
-
-/* touch.c (Android only, finding 141): the on-screen controls. sdl_host.c hands it SDL's finger
-   events; host_pad_device asks it for player 1's state (while riding). touch_reset: DHD_TOUCH or
-   DHD_TOUCH_LAYOUT changed (host_controls_load), read them again. */
-void touch_merge(int riding, HostPad *out);
-void touch_event(const void *sdl_event);
-void touch_reset(void);
 
 /* ---- kernel.c ---- */
 enum { INTC_GS = 0, INTC_VBLANK_START = 2, INTC_VBLANK_END = 3, INTC_TIMER0 = 9 };
@@ -209,6 +229,11 @@ int pads_live(void);        /* played by hand: no DHD_PADS, script or DHD_NET_*;
 int pads_multitap(void);    /* 3-4 pads: a multitap on port 0, player i in slot i */
 void pads_begin_field(void);                /* each vsync, before the pads are read */
 void pads_read(int player, HostPad *out);   /* player i's controller for this field */
+/* touch_field.c: the touch controls' game side once a field (finding 141); the TOUCH CONTROLS
+   pages' commands (TOUCH_COMMAND_*, host_api.h); widescreen.c's HUD hook state. */
+void touch_field(void);
+void touch_command(int command);
+extern int touch_hud_place, touch_hud_seen;
 int pads_online(void);      /* an online race: started with DHD_NET_* or from the ONLINE menu */
 void hle_online_from_menu(void);            /* the ONLINE menu's room started its race */
 int hle_online_race_riders(void);           /* riders in the online race (10 offline) */

@@ -1,40 +1,31 @@
 //! A small host overlay, drawn after the game picture in surface pixels.
 use crate::device::Gpu;
+use super::font8x8;
 
-// Digits and FPS / MS PING from Daniel Hepper's font8x8_basic.h:
-// https://github.com/dhepper/font8x8/blob/master/font8x8_basic.h
-// Public Domain (the source header and README both state this); derived from
-// Marcel Sondaar / IBM public-domain VGA fonts. LSB is the leftmost pixel.
-const CHARS: &[u8] = b"0123456789FPSINGM ";
-const FONT: [[u8; 8]; 18] = [
-    [0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00], // 0
-    [0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00], // 1
-    [0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00], // 2
-    [0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00], // 3
-    [0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00], // 4
-    [0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00], // 5
-    [0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00], // 6
-    [0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00], // 7
-    [0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00], // 8
-    [0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00], // 9
-    [0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00], // F
-    [0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00], // P
-    [0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00], // S
-    [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // I
-    [0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00], // N
-    [0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00], // G
-    [0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00], // M
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], //  
-];
+/// The overlay's text texture over the corner of the surface.
+pub(crate) const SHADER: &str = r#"
+@group(0) @binding(0) var image: texture_2d<f32>;
+struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
+    let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return Out(vec4f(uv * vec2f(2., -2.) + vec2f(-1., 1.), 0., 1.), uv);
+}
+@fragment fn fs(p: Out) -> @location(0) vec4f {
+    return textureLoad(image, vec2i(p.uv * vec2f(128., 22.)), 0);
+}
+"#;
 
 #[derive(Default)]
 pub struct Counter {
     enabled: bool,
-    ping: i32,
+    /// The online line: milliseconds (< 0: none), and whether they are the riders' (a race) or the
+    /// room server's ping.
+    ms: i32,
+    riders: bool,
     start: Option<f64>,
     frames: u32,
     fps: u32,
-    shown: Option<(u32, i32)>,
+    shown: Option<(u32, i32, bool)>,
     objects: Option<Objects>,
 }
 struct Objects {
@@ -45,9 +36,10 @@ struct Objects {
 impl Counter {
     // Called only for acquired pictures immediately before presenting. Count those
     // pictures, including interpolated ones, rather than simulation ticks/vblanks.
-    pub fn update(&mut self, enabled: bool, ping: i32, now: f64) {
+    pub fn update(&mut self, enabled: bool, ms: i32, riders: bool, now: f64) {
         self.enabled = enabled;
-        self.ping = ping;
+        self.ms = ms;
+        self.riders = riders;
         if let Some(start) = self.start {
             self.frames += 1;
             let elapsed = now - start;
@@ -65,9 +57,9 @@ impl Counter {
         if !self.enabled { return; }
         let o = self.objects.get_or_insert_with(|| Objects::new(gpu, format));
         // The numbers change twice a second at most: the bitmap is written again only then.
-        if self.shown != Some((self.fps, self.ping)) {
-            self.shown = Some((self.fps, self.ping));
-            o.write(gpu, self.fps, self.ping);
+        if self.shown != Some((self.fps, self.ms, self.riders)) {
+            self.shown = Some((self.fps, self.ms, self.riders));
+            o.write(gpu, &lines(self.fps, self.ms, self.riders));
         }
         // Integer scaling keeps the bitmap crisp: eight pixels is about 2% of height.
         let scale = ((h as f32 / 400.0).round() as u32).max(1);
@@ -95,11 +87,19 @@ impl Counter {
         gpu.queue.submit([encoder.finish()]);
     }
 }
+/// The counter's text: frames a second, then the online line. In a race the other riders' delay
+/// (how old their snapshots are when they arrive: what the puppets are predicted across, finding
+/// 169), else the round trip to the room's server, which carries no race data. At most 13
+/// characters a line (the bitmap is 128 pixels wide).
+fn lines(fps: u32, ms: i32, riders: bool) -> [String; 2] {
+    [format!("{} FPS", fps.min(99999)),
+     if ms < 0 { String::new() } else if riders { format!("RIDERS {} MS", ms.min(999)) } else { format!("{} MS PING", ms.min(99999)) }]
+}
+
 impl Objects {
-    fn write(&self, gpu: &Gpu, fps: u32, ping: i32) {
-        let lines = [format!("{} FPS", fps), if ping >= 0 { format!("{} MS PING", ping.min(99999)) } else { String::new() }];
+    fn write(&self, gpu: &Gpu, lines: &[String; 2]) {
         let width = lines.iter().map(|s| s.len()).max().unwrap_or(0) as u32 * 8 + 4;
-        let height = if ping >= 0 { 22 } else { 12 };
+        let height = if lines[1].is_empty() { 12 } else { 22 };
         let xoff = 128 - width;
         let mut pixels = vec![0u8; 128 * 22 * 4];
         for y in 0..height { for x in 0..width {
@@ -107,7 +107,7 @@ impl Objects {
         }}
         for (line, text) in lines.iter().enumerate() {
             for (col, ch) in text.bytes().enumerate() {
-                let glyph = &FONT[CHARS.iter().position(|&c| c == ch).unwrap_or(17)];
+                let glyph = font8x8::glyph(ch);
                 for (y, row) in glyph.iter().enumerate() { for x in 0..8 {
                     if row & (1 << x) != 0 {
                         let at = ((line * 10 + y + 2) * 128 + col * 8 + x + 2 + xoff as usize) * 4;
@@ -122,17 +122,8 @@ impl Objects {
     }
 
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("performance counter"), source: wgpu::ShaderSource::Wgsl(r#"
-@group(0) @binding(0) var image: texture_2d<f32>;
-struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
-@vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
-    let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-    return Out(vec4f(uv * vec2f(2., -2.) + vec2f(-1., 1.), 0., 1.), uv);
-}
-@fragment fn fs(p: Out) -> @location(0) vec4f {
-    return textureLoad(image, vec2i(p.uv * vec2f(128., 22.)), 0);
-}
-"#.into()) });
+        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("performance counter"),
+                                                                                  source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let pipe = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("performance counter"), layout: None,
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
@@ -205,4 +196,19 @@ fn capture_png(gpu: &Gpu, frame: &wgpu::Texture, path: &str) -> Result<(), Strin
     encoder.write_header().map_err(|e| e.to_string())?.write_image_data(&pixels).map_err(|e| e.to_string())?;
     crate::host::log(&format!("present capture: {path}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lines;
+
+    #[test]
+    fn online_line_names_what_it_measures_and_fits() {
+        assert_eq!(lines(144, 38, true), ["144 FPS".to_string(), "RIDERS 38 MS".to_string()]);
+        assert_eq!(lines(60, 21, false)[1], "21 MS PING");
+        assert_eq!(lines(60, -1, true)[1], "");
+        for l in lines(999_999, 123_456, true).iter().chain(lines(999_999, 123_456, false).iter()) {
+            assert!(l.len() * 8 + 4 <= 128, "{l} is wider than the bitmap");
+        }
+    }
 }

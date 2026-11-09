@@ -39,7 +39,7 @@ use crate::device::Gpu;
 use crate::native::arenas::Arenas;
 use crate::native::convert::{ConvertObjects, ConvertSource};
 use crate::native::scanout::ScanoutObjects;
-use crate::native::pipelines::{gputimes, VARIANT_ALPHA_ONLY, VARIANT_DUAL, VARIANT_PLAIN, VARIANT_RGB_A128};
+use crate::native::pipelines::{gputimes, SPEC_SHIFT, TEXELS, TEXEL_SCALE_SHIFT, VARIANT_ALPHA_ONLY, VARIANT_DUAL, VARIANT_PLAIN, VARIANT_RGB_A128};
 use crate::native::shared::NativeShared;
 use crate::native::surfaces::Kit;
 use crate::native::{Native, Picture};
@@ -67,12 +67,12 @@ pub struct Pass {
     /// The open pass's target and Z surface (-1: none); -2 when no pass is open.
     target: i32,
     depth: i32,
-    /// The key of the pipeline set in the open pass (native_set_pipeline's pass_pipe).
-    pipe: Option<u32>,
+    /// The cache key of the pipeline set in the open pass (native_set_pipeline's pass_pipe).
+    pipe: Option<u64>,
     /// The picture's counts (shown and the display size are filled at the end).
     drawn: DhdrPictureResult,
     /// Keys whose pipeline failed, reported once.
-    failed: HashSet<u32>,
+    failed: HashSet<u64>,
     /// What the open pass has set, so a draw sets only what changed (in the browser each WebGPU
     /// call is a call out to JavaScript; the blend constant builds a JS object). WebGPU keeps
     /// all of these for the rest of the pass, across pipeline changes. Cleared with the pass.
@@ -81,8 +81,12 @@ pub struct Pass {
     /// the same bytes binds that offset again instead of a new copy (the arena is written once,
     /// at the submit, and nothing in it is overwritten during the picture).
     constants: Option<(DhdrNativeConstants, u32)>,
-    /// A draw not issued yet (first vertex, count): see `draw`.
-    pending: Option<(u32, u32)>,
+    /// A draw not issued yet (first vertex, count, its DHD_GPU_STATS kind): see `draw`.
+    pending: Option<(u32, u32, u32)>,
+    /// The next draw's DHD_GPU_STATS kind (`gpu_stats::class`).
+    class: u32,
+    #[cfg(not(target_arch = "wasm32"))]
+    stats: crate::native::gpu_stats::Stats,
     /// The picture is indexed (`dhdr_native_picture_indexed`): a draw's first and count are
     /// indices into the index buffer, which every draw pass binds.
     indexed: bool,
@@ -118,6 +122,9 @@ impl Pass {
             state: PassState::default(),
             constants: None,
             pending: None,
+            class: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            stats: crate::native::gpu_stats::Stats::new(),
             indexed: false,
         }
     }
@@ -254,30 +261,36 @@ impl Pass {
         self.depth = depth;
         self.pipe = None;
         rstat::pass();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.stats.pass();
         pass_trace::event("draw-begin:load/store", target, depth);
     }
 
     /// native_set_pipeline in the open pass: false (reported once per key) when the key has no
     /// pipeline; the draw is then skipped.
-    fn set_pipeline(&mut self, gpu: &Gpu, n: &mut crate::native::pipelines::Pipelines,
-                    objects: &crate::native::init::Objects, key: u32) -> bool {
+    fn set_pipeline(&mut self, gpu: &'static Gpu, n: &mut crate::native::pipelines::Pipelines,
+                    objects: &crate::native::init::Objects, key: u64) -> bool {
         if self.pipe == Some(key) {
             return true;
         }
-        match n.get(gpu, objects, key) {
-            Ok(pipe) => {
+        // The specialised pipeline, or the generic one while it is being built (the same picture).
+        match n.get_special(gpu, objects, key) {
+            Ok((given, _)) if self.pipe == Some(given) => true,
+            Ok((given, pipe)) => {
                 self.flush();
                 if let Some(pass) = self.pass.as_mut() {
                     pass.set_pipeline(pipe);
                     #[cfg(not(target_arch = "wasm32"))]
-                    crate::native::pipelines::pipelog::bind(key);
+                    crate::native::pipelines::pipelog::bind(key as u32);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.stats.pipeline(given);
                 }
-                self.pipe = Some(key);
+                self.pipe = Some(given);
                 true
             }
             Err(e) => {
                 if self.failed.insert(key) {
-                    crate::host::log(&format!("gs native: draw pipeline {key:07X}: {e}"));
+                    crate::host::log(&format!("gs native: draw pipeline {key:X}: {e}"));
                 }
                 false
             }
@@ -294,27 +307,31 @@ impl Pass {
             return;
         }
         if first.checked_add(count).is_some() {
-            if let Some((f, c)) = self.pending.as_mut() {
+            if let Some((f, c, k)) = self.pending.as_mut() {
                 // whole triangles only, so no vertex of one draw joins a triangle of the other
-                if c.is_multiple_of(3) && f.checked_add(*c) == Some(first) {
+                if c.is_multiple_of(3) && f.checked_add(*c) == Some(first) && *k == self.class {
                     *c += count;
                     return;
                 }
             }
         }
         self.flush();
-        self.pending = Some((first, count));
+        self.pending = Some((first, count, self.class));
     }
 
     /// Issues the pending draw, if any.
     fn flush(&mut self) {
-        if let Some((first, count)) = self.pending.take() {
+        if let Some((first, count, _class)) = self.pending.take() {
             if let Some(pass) = self.pass.as_mut() {
+                #[cfg(not(target_arch = "wasm32"))]
+                let q = self.stats.draw_begin(pass, _class);
                 if self.indexed {
                     pass.draw_indexed(first..first.saturating_add(count), 0, 0..1);
                 } else {
                     pass.draw(first..first.saturating_add(count), 0..1);
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                self.stats.draw_end(pass, q);
             }
         }
     }
@@ -336,6 +353,10 @@ impl Pass {
         #[cfg(not(target_arch = "wasm32"))]
         crate::native::pipelines::pipelog::submit();
         let t = rstat::T::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut encoder = encoder;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.stats.resolve(&mut encoder);
         let commands = encoder.finish();
         t.add(rstat::FINISH);
         #[cfg(not(target_arch = "wasm32"))]
@@ -347,6 +368,8 @@ impl Pass {
         let t = rstat::T::new();
         gpu.queue.submit([commands]);
         t.add(rstat::QSUB);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.stats.collect(gpu);
         self.timing.map();
     }
 }
@@ -393,6 +416,9 @@ impl Native {
         let _spike = crate::native::pipelines::SpikeTimer::new("picture", 0);
         let whole = rstat::T::new();
         let gpu = self.gpu;
+        gputimes::picture_begin(gpu);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pass.stats.picture_begin(gpu);
         let shared = NativeShared::get(gpu)?;
         let t = rstat::T::new();
         self.arenas.reserve(Some((gpu, &self.objects.uniform_layout)), p.commands, p.vertices.len() as u32)?;
@@ -533,6 +559,9 @@ impl Native {
             let mut big_s: u32 = 1;
             // Untextured, or a surface without a texture: zeros.
             let mut group = Some(v.shared.dummy_group.clone());
+            // A decoded or converted texture's size, when that is what the draw reads (`spec`'s
+            // `sized`; both are R32Uint texels).
+            let mut decoded: Option<(u32, u32)> = None;
             if k.texture_surface >= 0 {
                 let ts = k.texture_surface as usize;
                 if let Some(s) = surface(p, k.texture_surface) {
@@ -552,6 +581,8 @@ impl Native {
                 group = Some(r.group(index as usize).clone());
             } else if let Some(t) = p.texture(i) {
                 group = Some(t.group(0).clone());
+                let (w, h, _) = t.size();
+                decoded = Some((w, h));
             } else if k.convert >= 0 {
                 // Again for each run of draws: the surface may have changed since.
                 if k.convert as i32 != last_convert {
@@ -577,6 +608,8 @@ impl Native {
                     continue;
                 }
                 group = converted.clone();
+                // Its texels, as a decoded texture's (convert.rs).
+                decoded = Some(self.converts.size(k.convert as usize));
             }
             if k.convert < 0 {
                 last_convert = -1;
@@ -620,7 +653,26 @@ impl Native {
             }
             let scissor = [left as u32, top as u32, (right - left) as u32, (bottom - top) as u32];
             self.pass.set_state(tw, th, scissor, uses_constant(k.blend_key).then_some(k.blend_fix));
-            self.draw_passes(k, p.vertices, indices, depth.is_some(), retained_depth, offset, &v.uniforms, &group);
+            // Specialise decoded textures and scaled surface reads only when both
+            // scale factors match and their division is an exact binary shift.
+            let source_scale = constants.scale >> 8 & 255;
+            let resolution = constants.scale >> 16 & 255;
+            let texel_scale = if constants.flags & (1 | 2048) == 1 && source_scale == resolution
+                && source_scale <= 8 && source_scale.is_power_of_two() { source_scale } else { 0 };
+            let spec = if crate::native::pipelines::spec_enabled() {
+                let c = &constants;
+                // Powers of two (as the GS's): the gather's corner / size is then exact.
+                let sized = decoded == Some((c.tex_size[0], c.tex_size[1]))
+                    && c.tex_size[0].is_power_of_two() && c.tex_size[1].is_power_of_two();
+                crate::native::pipelines::spec(c.flags, [c.wrap[0], c.wrap[1]], c.atst, sized, c.alpha_scale == 255.0)
+            } else {
+                0
+            };
+            // Decoded and converted textures are R32Uint texels: the `_u` entry points read them
+            // (pipelines.rs TEXELS).
+            let texels = if decoded.is_some() { TEXELS } else { 0 };
+            self.draw_passes(k, p.vertices, indices, depth.is_some(), retained_depth, texel_scale | texels, spec,
+                             offset, &v.uniforms, &group);
             self.pass.drawn.draws += 1;
             // Conservative even for masked/empty writes: a false invalidation costs
             // performance only. Depth also survives into later pictures/probes.
@@ -692,9 +744,10 @@ impl Native {
             pipeline: &self.objects.convert_pipe,
             layout: &self.objects.convert_layout,
             inverse: &self.objects.inverse,
-            texture_layout: &shared.texture_layout,
-            nearest: &shared.nearest,
+            texels_layout: &shared.texels_layout,
+            texels_sampler: &shared.repeat,
             dummy_view: &shared.dummy_view,
+            dummy_texels_view: &shared.dummy_texels_view,
             dummy_depth_view: &shared.dummy_depth_view,
         };
         self.pass.end_reason("conversion");
@@ -704,9 +757,14 @@ impl Native {
     }
 
     /// native_scanout through scanout.rs: the picture's display surface (with a texture) into the
-    /// display texture, recorded after the open pass ends; false when nothing was scanned out.
+    /// display texture, recorded after the open pass ends; false when nothing was scanned out. The
+    /// display off (`DISPLAY_OFF`) makes the display texture black.
     fn scan_out(&mut self, p: &Picture) -> bool {
         let gpu = self.gpu;
+        if p.display_surface == DISPLAY_OFF {
+            let encoder = self.pass.encoder(gpu);
+            return self.display.black(encoder);
+        }
         if p.display_surface < 0 {
             return false;
         }
@@ -714,7 +772,8 @@ impl Native {
             return false;
         };
         let Some(view) = self.surface_view(p.display_surface as usize) else { return false };
-        let o = ScanoutObjects { pipeline: &self.objects.scanout_pipe, layout: &self.objects.scanout_layout };
+        let o = ScanoutObjects { pipeline: &self.objects.scanout_pipe,
+            fast_pipeline: &self.objects.scanout_fast_pipe, layout: &self.objects.scanout_layout };
         let encoder = self.pass.encoder(gpu);
         pass_trace::event("compute-scanout", p.display_surface as i32, -1);
         self.display.scanout(gpu, encoder, &mut self.arenas, &o, &view, info.scale, &p.display)
@@ -729,25 +788,35 @@ impl Native {
     /// an equal Z lost); without, the same test on the unchanged Z buffer.
     #[allow(clippy::too_many_arguments)]
     fn draw_passes(&mut self, k: &DhdrCommand, vertices: &[DhdrVertex], indices: Option<&[u32]>, has_depth: bool,
-                   retained_depth: bool, offset: u32, uniforms: &wgpu::BindGroup, group: &wgpu::BindGroup) {
+                   retained_depth: bool, texel_scale: u32, spec: u32, offset: u32, uniforms: &wgpu::BindGroup,
+                   group: &wgpu::BindGroup) {
         let gpu = self.gpu;
         let (blend_key, mask, dk) = (k.blend_key, k.color_mask as u32, k.depth_key as u32);
         let (src, dst) = (blend_key >> 1 & 31, blend_key >> 6 & 31);
         let uses_as = blend_key & 1 != 0 && (src == BLEND_SA || src == BLEND_ISA || dst == BLEND_SA || dst == BLEND_ISA);
         let depth = if has_depth { 16 | if dk & 4 != 0 { 8 } else { 0 } | (dk & 3) } else if retained_depth { 17 } else { 0 };
-        let base = blend_key | depth << 18;
+        // texel_scale carries TEXELS (bit 29) above the scale itself.
+        let texel_key = (texel_scale & 15) << TEXEL_SCALE_SHIFT | texel_scale & TEXELS;
+        let texel_scale = texel_scale & 15;
+        let base = blend_key | depth << 18 | texel_key;
+        let special = (spec as u64) << SPEC_SHIFT;
         self.pass.set_groups(uniforms, offset, group);
+        let flags = k.constants.flags;
+        let blends = blend_key & 1 != 0;
         if !uses_as || (self.objects.dual && self.objects.dual_module.is_some()) {
             let variant = if uses_as { VARIANT_DUAL } else { VARIANT_PLAIN };
-            if self.pass.set_pipeline(gpu, &mut self.pipelines, &self.objects, base | mask << 14 | variant << 23) {
+            self.pass.class = stats_class(flags, texel_scale, variant, depth, blends, mask & 8 != 0);
+            if self.pass.set_pipeline(gpu, &mut self.pipelines, &self.objects,
+                                      (base | mask << 14 | variant << 23) as u64 | special) {
                 self.pass.draw(k.first, k.count);
             }
             return;
         }
         if mask & 7 != 0
             && self.pass.set_pipeline(gpu, &mut self.pipelines, &self.objects,
-                                      base | (mask & 7) << 14 | VARIANT_RGB_A128 << 23)
+                                      (base | (mask & 7) << 14 | VARIANT_RGB_A128 << 23) as u64 | special)
         {
+            self.pass.class = stats_class(flags, texel_scale, VARIANT_RGB_A128, depth, blends, false);
             self.pass.draw(k.first, k.count);
         }
         if mask & 8 == 0 {
@@ -768,9 +837,21 @@ impl Native {
             }
         }
         if self.pass.set_pipeline(gpu, &mut self.pipelines, &self.objects,
-                                  8 << 14 | second << 18 | VARIANT_ALPHA_ONLY << 23) {
+                                  (8 << 14 | second << 18 | VARIANT_ALPHA_ONLY << 23 | texel_key) as u64 | special) {
+            self.pass.class = stats_class(flags, texel_scale, VARIANT_ALPHA_ONLY, second, false, true);
             self.pass.draw(first, k.count);
         }
+    }
+}
+
+/// A draw's DHD_GPU_STATS kind (`gpu_stats::class`; 0 in the browser, which has no statistics).
+fn stats_class(flags: u32, texel_scale: u32, variant: u32, depth: u32, blend: bool, alpha: bool) -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::native::gpu_stats::class(flags, texel_scale, variant, depth, blend, alpha);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (flags, texel_scale, variant, depth, blend, alpha);
+        0
     }
 }
 

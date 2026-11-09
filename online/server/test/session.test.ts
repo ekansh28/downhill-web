@@ -32,11 +32,12 @@ async function start(h:Client,cs:Client[],code:string) {
   await Promise.all(cs.map(c=>c.json("start")));
 }
 describe("session rooms",()=>{
-  it("relays only between current entrants, excluding waiting and returned players",async()=>{
+  it("never relays race data over the control socket",async()=>{
     const {h,cs,code}=await setup(); await start(h,cs,code);
     const late=await Client.join(code,"Late");
     cs[1].ws.send(new Uint8Array([5,0,99]).buffer);
-    expect([...(await h.binary())]).toEqual([5,1,99]);
+    cs[1].sendJson({type:"ping",t:1}); await cs[1].json("pong");
+    await expect(h.next(f=>typeof f!=="string",50)).rejects.toThrow("timed out");
     late.sendJson({type:"ping",t:1}); await late.json("pong"); late.drain();
     await expect(late.next(f=>typeof f!=="string",50)).rejects.toThrow("timed out");
     h.sendJson({type:"back"}); await snap(h,r=>!r.members[0].inRace);
@@ -156,7 +157,7 @@ describe("session rooms",()=>{
     cs[1].sendJson({type:"back"});
     expect((await snap(h,r=>r.lastRace)).members.map((m:any)=>m.ready)).toEqual([true,false]);
   });
-  it("after a restart, a player back under their name gets their member again; the rest leave",async()=>{
+  it("after a restart, a player back with their token gets their member again; the rest leave",async()=>{
     const {h,cs,code}=await setup(4);
     cs[1].sendJson({type:"ready",ready:true}); await snap(h,r=>r.members[1].ready);
     // a restart: every socket gone, no close events
@@ -164,9 +165,9 @@ describe("session rooms",()=>{
       for (const ws of ctx.getWebSockets()) ws.serializeAttachment({...ws.deserializeAttachment(), memberId:null, gone:true});
       room.sockets.clear();
     });
-    const back=await Client.connect(`/v1/rooms/${code}`); back.hello("Host",{features:["session","countdown"]});
+    const back=await Client.connect(`/v1/rooms/${code}`); back.hello("Host",{features:["session","countdown"],rejoinToken:h.welcome.rejoinToken});
     expect(await back.json("welcome")).toMatchObject({memberId:0,host:true});
-    const p1=await Client.connect(`/v1/rooms/${code}`); p1.hello("P1",{features:["session","countdown"]});
+    const p1=await Client.connect(`/v1/rooms/${code}`); p1.hello("P1",{features:["session","countdown"],rejoinToken:cs[1].welcome.rejoinToken});
     expect((await p1.json("welcome")).memberId).toBe(1);
     expect((await snap(back,r=>r.members.length===4)).members[1].ready).toBe(true);
     await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)), async (room:any) => { room.startedAt=Date.now()-60_000; });
@@ -223,7 +224,7 @@ describe("session rooms",()=>{
     h.sendJson({type:"settings",track:9});
     const bumped=await snap(h,r=>r.settings.track===9);
     expect(bumped.nextRaceAt-bumped.serverTime).toBeGreaterThanOrEqual(14990);
-    expect(bumped.members.every((m:any)=>!m.ready)).toBe(true);
+    expect(bumped.members.map((m:any)=>m.ready)).toEqual([true,false]);  // a new track keeps Ready (finding 128)
     cs[1].sendJson({type:"ready",ready:true}); await snap(h,r=>r.members[1].ready);
     await due(code,"nextRaceAt");
     await snap(h,r=>r.phase==="starting");
@@ -276,6 +277,129 @@ describe("session rooms",()=>{
     for(let i=0;i<10;i++)cs[i].sendJson({type:"finish",ticks:600+i,place:i+1});
     expect((await snap(h,r=>r.lastRace)).settings.track).toBe(12);
   });
+  // Finding 166: the game's online list as a host sends it (online_menu.c tracks, limits from
+  // func_00182290), with Salt City MX (17, six riders) and Salt City TD (18, eight); MOSH pick-only.
+  const gameTracks=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,23,24,25];
+  const gameLimits=gameTracks.map(t=>[0,1,2,3,5,11,12,19,20].includes(t)?10:[4,10,13,16,18,22,24].includes(t)?8:6);
+  it("takes the game's list with both Salt City events and their rider limits",async()=>{
+    const {h,cs,code}=await setup(8);
+    h.sendJson({type:"settings",track:17,then:"next",rotation:gameTracks,trackLimits:gameLimits,pickOnly:[23]});
+    await snap(h,r=>r.rotation.length===25&&r.settings.track===17);
+    await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)),async(room:any)=>{
+      expect([room.trackLimit(room.state,17),room.trackLimit(room.state,18)]).toEqual([6,8]);
+      expect(room.fittingRotation(room.state,6).slice(0,2)).toEqual([18,19]);
+      expect(room.fittingRotation(room.state,8)).toEqual([18,19,20,22,24,0,1,2,3,4,5,10,11,12,13,16]);
+    });
+    // eight ready on Salt City MX (six places): Salt City TD at grid lock, then NEXT goes on to BC
+    await start(h,cs,code);
+    await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)),async(room:any)=>{
+      expect([room.state.race.track,room.state.race.slots.length,room.state.lastEvent]).toEqual([18,8,"track_switch:17:6:18"]);
+    });
+    for(let i=0;i<8;i++)cs[i].sendJson({type:"finish",ticks:600+i,place:i+1});
+    expect((await snap(h,r=>r.lastRace)).settings.track).toBe(19);
+  });
+  it("races six on Salt City MX without a switch",async()=>{
+    const {h,cs,code}=await setup(6);
+    h.sendJson({type:"settings",track:17,rotation:gameTracks,trackLimits:gameLimits,pickOnly:[23]});
+    await snap(h,r=>r.rotation.length===25&&r.settings.track===17);
+    await start(h,cs,code);
+    await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)),async(room:any)=>{
+      expect([room.state.race.track,room.state.race.slots.length]).toEqual([17,6]);
+    });
+  });
+  // Finding 128: Ready means "count me in for the next race".
+  const readies=(r:any)=>r.members.map((m:any)=>m.ready);
+  const allReady=async(h:Client,cs:Client[])=>{for(const c of cs)c.sendJson({type:"ready",ready:true}); return snap(h,r=>r.members.every((m:any)=>m.ready));};
+  it("keeps Ready across track, NEXT/RANDOM picks and computer riders; cheats and choosing clear it",async()=>{
+    const {h,cs}=await setup(3);
+    h.sendJson({type:"settings",nextRace:"host"}); await snap(h,r=>r.rules.nextRace==="host");
+    cs[1].sendJson({type:"ready",ready:true}); cs[2].sendJson({type:"ready",ready:true});
+    await snap(h,r=>r.members[1].ready&&r.members[2].ready);
+    h.sendJson({type:"settings",track:5});
+    expect(readies(await snap(h,r=>r.settings.track===5))).toEqual([false,true,true]);
+    h.sendJson({type:"settings",laps:1});  // computer riders off
+    expect(readies(await snap(h,r=>r.settings.laps===1))).toEqual([false,true,true]);
+    h.sendJson({type:"settings",laps:0});  // and on again
+    expect(readies(await snap(h,r=>r.settings.laps===0))).toEqual([false,true,true]);
+    h.sendJson({type:"settings",laps:2});  // cheats on
+    expect(readies(await snap(h,r=>r.settings.laps===2))).toEqual([false,false,false]);
+    cs[1].sendJson({type:"ready",ready:true}); cs[2].sendJson({type:"ready",ready:true});
+    await snap(h,r=>r.members[1].ready&&r.members[2].ready);
+    h.sendJson({type:"settings",laps:3});  // computer riders off, cheats still on
+    expect(readies(await snap(h,r=>r.settings.laps===3))).toEqual([false,true,true]);
+    h.sendJson({type:"settings",laps:1});  // cheats off
+    expect(readies(await snap(h,r=>r.settings.laps===1))).toEqual([false,false,false]);
+    cs[1].sendJson({type:"ready",ready:true}); await snap(h,r=>r.members[1].ready);
+    cs[1].sendJson({type:"pick",choosing:true});
+    expect(readies(await snap(h,r=>r.members[1].choosing))).toEqual([false,false,false]);
+  });
+  it("race end, retiring to the room and the host's END spend Ready",async()=>{
+    const {h,cs,code}=await setup(3);
+    h.sendJson({type:"settings",nextRace:"host"}); await snap(h,r=>r.rules.nextRace==="host");
+    await start(h,cs,code);
+    cs[1].sendJson({type:"back"});  // retires to the room
+    expect(readies(await snap(h,r=>!r.members[1].inRace))).toEqual([true,false,true]);
+    h.sendJson({type:"finish",ticks:600,place:1}); cs[2].sendJson({type:"finish",ticks:700,place:2});
+    expect(readies(await snap(h,r=>!!r.lastRace))).toEqual([false,false,false]);  // the race ended for those who raced
+    await start(h,cs,code);
+    h.sendJson({type:"end"});
+    expect((await h.json("ended")).reason).toBe("void");
+    expect(readies(await snap(h,r=>r.phase==="open"))).toEqual([false,false,false]);
+    const late=await Client.join(code,"Late");  // joining: not ready
+    expect((await snap(late,r=>r.members.length===4)).members[3].ready).toBe(false);
+  });
+  it("a track change during the countdown keeps the grid and runs the countdown again",async()=>{
+    const {h,cs,code}=await setup(3);
+    h.sendJson({type:"settings",rotation:[0,9,12],trackLimits:[10,6,10]}); await snap(h,r=>r.rotation.length===3);
+    expect((await allReady(h,cs)).phase).toBe("starting");
+    await edit(code,st=>st.countdownEndsAt=Date.now()+60_000);  // held: the test's countdown is 300 ms
+    h.sendJson({type:"settings",track:12});
+    const r=await snap(h,r=>r.settings.track===12);
+    expect(r.phase).toBe("starting");
+    expect(readies(r)).toEqual([true,true,true]);
+    expect(r.countdownEndsAt-r.serverTime).toBeGreaterThan(200);  // a full countdown from now again
+    expect(r.countdownEndsAt-r.serverTime).toBeLessThanOrEqual(300);
+    await due(code,"countdownEndsAt");
+    expect((await h.json("start")).track).toBe(12);
+  });
+  it("a too-small track chosen during the countdown switches to the next fitting one",async()=>{
+    const {h,cs,code}=await setup(8);
+    h.sendJson({type:"settings",track:0,rotation:[0,9,12],trackLimits:[10,6,10]}); await snap(h,r=>r.rotation.length===3);
+    expect((await allReady(h,cs)).phase).toBe("starting");
+    await edit(code,st=>st.countdownEndsAt=Date.now()+60_000);
+    h.sendJson({type:"settings",track:9});
+    const r=await snap(h,r=>r.lastEvent==="track_switch:9:6:12");
+    expect([r.settings.track,r.phase,readies(r).every(Boolean)]).toEqual([12,"starting",true]);
+  });
+  for(const then of ["next","random"]) it(then+" never chooses a pick-only track (MOSH), which keeps its limit",async()=>{
+    const {h,cs,code}=await setup(2);
+    h.sendJson({type:"settings",track:0,then,nextRace:"host",rotation:[0,23,2],trackLimits:[10,6,10],pickOnly:[23]});
+    await snap(h,r=>r.rules.then===then);
+    for(let race=0;race<4;race++){
+      await start(h,cs,code);
+      for(const c of cs)c.sendJson({type:"finish",ticks:600,place:1});
+      const r=await snap(h,r=>r.lastRace?.id===race+1);
+      expect(r.settings.track).not.toBe(23);
+    }
+    h.sendJson({type:"settings",track:23}); await snap(h,r=>r.settings.track===23);
+    await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)),async(room:any)=>{
+      expect(room.trackLimit(room.state,23)).toBe(6);
+      expect(room.fittingRotation(room.state,2)).toEqual([2,0]);
+    });
+  });
+  it("pickOnly must name rotation tracks and comes with a rotation",async()=>{
+    const {h,code}=await setup(1);
+    for(const m of [{pickOnly:[23]},{rotation:[0,2],trackLimits:[10,10],pickOnly:[23]},{rotation:[0,2],trackLimits:[10,10],pickOnly:"23"}]) {
+      h.sendJson({type:"settings",...m});
+      expect((await h.json("error")).code).toBe("bad_value");
+    }
+    h.sendJson({type:"settings",rotation:[0,23],trackLimits:[10,6],pickOnly:[23]});
+    await snap(h,r=>r.rotation.length===2);
+    h.sendJson({type:"settings",rotation:[0,23],trackLimits:[10,6]});  // a 0.7.6 client: no pickOnly, MOSH in the rotation
+    await snap(h,r=>r.rotation.length===2);
+    const st:any=await runInDurableObject(env.ROOM.get(env.ROOM.idFromName(code)),async(room:any)=>room.state);
+    expect(st.pickOnly).toEqual([]);
+  });
   it("keeps ten results within ten places when the reported places lag",async()=>{
     const {h,cs,code}=await setup(10); await start(h,cs,code);
     for(let i=1;i<10;i++)cs[i].sendJson({type:"finish",ticks:600+i,place:i+1});
@@ -286,9 +410,12 @@ describe("session rooms",()=>{
     const {h,cs,code}=await setup(1);
     h.sendJson({type:"settings",public:true,maxPlayers:10,roomName:"\u0800".repeat(32),rotation:Array.from({length:64},(_,i)=>i),trackLimits:Array(64).fill(10)});
     await snap(h,r=>r.public);
-    for(let i=1;i<10;i++)cs.push(await Client.join(code,"\u0800".repeat(24)));
+    // names of the same size, each its own (a silent member's name again is its rejoin, finding 137)
+    for(let i=1;i<10;i++)cs.push(await Client.join(code,"\u0800".repeat(23)+String.fromCharCode(0x0800+i)));
     await snap(h,r=>r.members.length===10);
-    await edit(code, st=>{st.members[0].name="\u0800".repeat(24);st.version="v".repeat(64);});
+    // every member with a region and the room with a colo and hint (finding 135): still within 4 KB
+    await edit(code, st=>{st.members[0].name="\u0800".repeat(24);st.version="v".repeat(64);
+      for (const m of st.members) m.region="ASIA"; st.colo="FRA"; st.origin={hint:"apac-ne",createdIn:"ASIA",createdFrom:"WAW"};});
     await start(h,cs,code);
     const list=async()=> (await (await exports.default.fetch(new Request("https://dhd.skuza.app/v1/lobbies"))).json<any>()).lobbies;
     await expect.poll(list).toContainEqual(expect.objectContaining({code,phase:"racing",full:true,players:10}));

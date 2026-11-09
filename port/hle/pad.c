@@ -121,6 +121,7 @@ void pad_vsync(void)
 {
     int port, slot;
     menu_mouse_field();  /* the mouse in the menus: the presses it makes this field */
+    touch_field();       /* the touch controls (touch_field.c): before the pads are read */
     pads_begin_field();
     presence_field();
     for (port = 0; port < 2; port++)
@@ -138,13 +139,17 @@ void pad_vsync(void)
     }
 }
 
+int port_controls_capturing(void);  /* controls_settings.c */
+
 /* Just-in-time frames (kernel.c): the controller read again into the frames pad_vsync just wrote,
    at the end of the wait after the VBLANK, so the game reads the newest state. Only the input
-   bytes change (no new frame counter). Scripted and online input stay as pad_vsync read them. */
+   bytes change (no new frame counter). Scripted and online input stay as pad_vsync read them, and
+   so does the held-back input while PC SETTINGS > Controls waits for a key or button (pads_read). */
 void pad_refresh(void)
 {
     static int live = -1;
     int port, slot;
+    if (port_controls_capturing()) return;
     if (live < 0)
         live = !getenv("DHD_AUTOPAD") && !getenv("DHD_AUTOPAD_FRAMES") && !getenv("DHD_NAV") &&
                !getenv("DHD_NET_CREATE") && !getenv("DHD_NET_JOIN");
@@ -252,5 +257,5 @@ void rpc_pad_ext(int fno, void *send, int ssize, void *recv, int rsize)
 int port_input_stamp(int legacy_field)
 {
     extern unsigned int D_0029E10C;
-    return port_fps_high() ? (int)D_0029E10C : legacy_field;
+    return port_delta_clock() ? (int)D_0029E10C : legacy_field;
 }

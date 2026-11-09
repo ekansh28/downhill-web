@@ -18,6 +18,8 @@ static const SettingChoice setting_choices_dhd_present_filter[] = {{"linear", "S
 static const SettingChoice setting_choices_renderer[] = {{"native", "Native"}, {"exact", "Exact"}};
 static const SettingChoice setting_choices_skip_movies[] = {{"0", "OFF"}, {"1", "ON"}};
 static const SettingChoice setting_choices_vibration[] = {{"0", "OFF"}, {"1", "ON"}};
+static const SettingChoice setting_choices_stick_dead_zone[] = {{"game", "Game (36%)"}, {"5", "5%"}, {"10", "10%"}, {"15", "15%"}, {"20", "20%"}, {"25", "25%"}, {"30", "30%"}, {"40", "40%"}, {"50", "50%"}};
+static const SettingChoice setting_choices_prompts[] = {{"auto", "Auto"}, {"playstation", "PlayStation"}, {"xbox", "Xbox"}, {"nintendo", "Nintendo"}};
 static const SettingChoice setting_choices_textures[] = {{"off", "OFF"}, {"on", "ON"}};
 static const SettingChoice setting_choices_font[] = {{"original", "Original"}, {"sharp", "Sharp"}};
 static const SettingChoice setting_choices_fps[] = {{"60", "60 fps"}, {"120", "120 fps"}, {"144", "144 fps"}, {"165", "165 fps"}, {"240", "240 fps"}, {"monitor", "Monitor"}};
@@ -31,6 +33,20 @@ static const SettingChoice setting_choices_voice_range[] = {{"25", "25 m"}, {"50
 static const SettingChoice setting_choices_voice_bitrate[] = {{"8000", "8 kbps"}, {"16000", "16 kbps"}, {"24000", "24 kbps"}, {"32000", "32 kbps"}, {"48000", "48 kbps"}, {"64000", "64 kbps"}};
 static const SettingChoice setting_choices_keep_ready[] = {{"0", "OFF"}, {"1", "ON"}};
 static const SettingChoice setting_choices_unlock_all[] = {{"0", "OFF"}, {"1", "ON"}};
+static const SettingChoice setting_choices_touch_preset[] = {{"thumb", "Thumb zones"}, {"classic", "Classic pad"}};
+static const SettingChoice setting_choices_touch_hand[] = {{"right", "Right"}, {"left", "Left"}};
+static const SettingChoice setting_choices_touch_steer[] = {{"stick", "Stick"}, {"tilt", "Tilt"}};
+static const SettingChoice setting_choices_touch_size[] = {{"auto", "Auto"}, {"70", "70%"}, {"75", "75%"}, {"80", "80%"}, {"85", "85%"}, {"90", "90%"}, {"95", "95%"}, {"100", "100%"}, {"105", "105%"}};
+static const SettingChoice setting_choices_touch_opacity[] = {{"25", "25%"}, {"30", "30%"}, {"35", "35%"}, {"40", "40%"}, {"45", "45%"}, {"50", "50%"}, {"55", "55%"}, {"60", "60%"}, {"65", "65%"}, {"70", "70%"}, {"75", "75%"}, {"80", "80%"}, {"85", "85%"}, {"90", "90%"}, {"95", "95%"}, {"100", "100%"}};
+static const SettingChoice setting_choices_touch_stick[] = {{"floating", "Floating"}, {"fixed", "Fixed"}};
+static const SettingChoice setting_choices_touch_stick_range[] = {{"8", "8 mm"}, {"10", "10 mm"}, {"12", "12 mm"}, {"14", "14 mm"}, {"16", "16 mm"}, {"18", "18 mm"}, {"20", "20 mm"}};
+static const SettingChoice setting_choices_touch_trick_stick[] = {{"25", "25 mm"}, {"28", "28 mm"}, {"31", "31 mm"}, {"34", "34 mm"}, {"37", "37 mm"}};
+static const SettingChoice setting_choices_touch_labels[] = {{"auto", "Auto"}, {"always", "Always"}, {"off", "Off"}};
+static const SettingChoice setting_choices_touch_attacks[] = {{"flick", "Flick"}, {"buttons", "Buttons"}};
+static const SettingChoice setting_choices_touch_vibration[] = {{"0", "Off"}, {"1", "On"}};
+static const SettingChoice setting_choices_touch_with_pad[] = {{"hide", "Hide"}, {"show", "Show"}};
+static const SettingChoice setting_choices_touch_tilt_strength[] = {{"0", "0%"}, {"10", "10%"}, {"20", "20%"}, {"30", "30%"}, {"40", "40%"}, {"50", "50%"}, {"60", "60%"}, {"70", "70%"}, {"80", "80%"}, {"90", "90%"}, {"100", "100%"}};
+static const SettingChoice setting_choices_names[] = {{"off", "Off"}, {"small", "Small"}, {"medium", "Medium"}, {"large", "Large"}};
 static const SettingChoice setting_choices_auto_update[] = {{"ask", "Ask"}, {"on", "Automatic"}, {"off", "Off"}};
 static const SettingChoice setting_choices_discord[] = {{"off", "OFF"}, {"on", "ON"}};
 
@@ -44,6 +60,8 @@ static const SettingInfo setting_table[] = {
     {"renderer", "DHD_RENDER", "exact", setting_choices_renderer, 2},
     {"skip_movies", "DHD_SKIP_MOVIES", "0", setting_choices_skip_movies, 2},
     {"vibration", "DHD_VIBRATION", "1", setting_choices_vibration, 2},
+    {"stick_dead_zone", "DHD_STICK_DEAD_ZONE", "game", setting_choices_stick_dead_zone, 9},
+    {"prompts", "DHD_PROMPTS", "playstation", setting_choices_prompts, 4},
     {"textures", "DHD_TEXTURES", "on", setting_choices_textures, 2},
     {"font", "DHD_FONT", "sharp", setting_choices_font, 2},
     {"fps", "DHD_FPS", "60", setting_choices_fps, 6},
@@ -57,6 +75,20 @@ static const SettingInfo setting_table[] = {
     {"voice_bitrate", "DHD_VOICE_BITRATE", "24000", setting_choices_voice_bitrate, 6},
     {"keep_ready", "DHD_KEEP_READY", "1", setting_choices_keep_ready, 2},
     {"unlock_all", "DHD_UNLOCK_ALL", "0", setting_choices_unlock_all, 2},
+    {"touch_preset", "DHD_TOUCH_PRESET", "classic", setting_choices_touch_preset, 2},
+    {"touch_hand", "DHD_TOUCH_HAND", "right", setting_choices_touch_hand, 2},
+    {"touch_steer", "DHD_TOUCH_STEER", "stick", setting_choices_touch_steer, 2},
+    {"touch_size", "DHD_TOUCH_SIZE", "auto", setting_choices_touch_size, 9},
+    {"touch_opacity", "DHD_TOUCH_OPACITY", "60", setting_choices_touch_opacity, 16},
+    {"touch_stick", "DHD_TOUCH_STICK", "floating", setting_choices_touch_stick, 2},
+    {"touch_stick_range", "DHD_TOUCH_STICK_RANGE", "12", setting_choices_touch_stick_range, 7},
+    {"touch_trick_stick", "DHD_TOUCH_TRICK_STICK", "31", setting_choices_touch_trick_stick, 5},
+    {"touch_labels", "DHD_TOUCH_LABELS", "auto", setting_choices_touch_labels, 3},
+    {"touch_attacks", "DHD_TOUCH_ATTACKS", "flick", setting_choices_touch_attacks, 2},
+    {"touch_vibration", "DHD_TOUCH_VIBRATION", "1", setting_choices_touch_vibration, 2},
+    {"touch_with_pad", "DHD_TOUCH_WITH_PAD", "hide", setting_choices_touch_with_pad, 2},
+    {"touch_tilt_strength", "DHD_TOUCH_TILT_STRENGTH", "50", setting_choices_touch_tilt_strength, 11},
+    {"names", "DHD_NAMES", "small", setting_choices_names, 4},
     {"auto_update", "", "ask", setting_choices_auto_update, 3},
     {"discord", "DHD_DISCORD", "off", setting_choices_discord, 2},
 };

@@ -157,8 +157,14 @@ DHDR_FN(dhdr_surface_usage)   uint32_t dhdr_surface_usage(const DhdrSurface *s);
 DHDR_FN(dhdr_present_exact)   int dhdr_present_exact(DhdrSurface *s, DhdrExact *x, const uint32_t *pixels,
                                                      uint32_t w, uint32_t h, uint32_t window_w, uint32_t window_h);
 /* Presents the texture the last call that returned 1 drew (SurfaceTexture::present). */
-/* Live presenter overlay; ping < 0 hides the online line, seconds is monotonic wall time. */
-DHDR_FN(dhdr_surface_counter) void dhdr_surface_counter(DhdrSurface *s, int enabled, int ping, double seconds);
+/* Live presenter overlay. The online line: ms < 0 hides it; riders 0: "ms MS PING" (the round trip
+   to the room's server), 1: "RIDERS ms MS" (how old the other riders' snapshots are on arrival, in
+   a race; finding 169). seconds is monotonic wall time. */
+DHDR_FN(dhdr_surface_counter) void dhdr_surface_counter(DhdrSurface *s, int enabled, int ms, int riders, double seconds);
+/* The touch controls' overlay (finding 141) for the next pictures: count shapes of 16 floats each
+   (kind, x, y, a, b, c, d, 0, fill r g b a, line r g b a; port/hle/touch.h's TouchShape in mm and
+   colours 0..1) on a screen width_mm x height_mm; count 0 hides it. The data is copied. */
+DHDR_FN(dhdr_surface_touch) void dhdr_surface_touch(DhdrSurface *s, const float *items, uint32_t count, float width_mm, float height_mm);
 DHDR_FN(dhdr_surface_present) void dhdr_surface_present(DhdrSurface *s);
 
 /* ---------------- native renderer, GPU half ----------------
@@ -223,7 +229,8 @@ typedef struct DhdrSurfaceInfo {     /* native_core.inc's NativeSurface, as the 
 typedef struct DhdrPicture {
     uint32_t size;                   /* sizeof(DhdrPicture) */
     uint32_t vertex_count, command_count, convert_count, surface_count;
-    int32_t display_surface;         /* scanned-out surface, or -1 */
+    int32_t display_surface;         /* scanned-out surface; -1 none (the last picture stays); -2 the display
+                                        is off (no read circuit on): a black picture */
     uint32_t display[12];            /* scanout constants as recorded (native.wgsl native_scanout) */
     uint32_t movie_width, movie_height, movie_on;
     uint32_t scale;                  /* the renderer's resolution scale (DHD_SCALE or matched) */
@@ -242,7 +249,9 @@ typedef struct DhdrPresentRect {
     float rect[4];                   /* present.wgsl's rectangle, as native_present_rect makes it */
     int32_t cut[4];                  /* scissor in window pixels: left, top, right, bottom */
     uint32_t window_w, window_h;     /* the client area; 0 x 0 = minimised: nothing is drawn */
-    uint32_t resize, pad;            /* resize: reconfigure even when the size is unchanged */
+    uint32_t resize;                 /* reconfigure even when the size is unchanged */
+    uint32_t fill;                   /* nonzero: the window around cut gets the picture blurred and
+                                        darkened (widescreen's 4:3 pictures, finding 140) */
 } DhdrPresentRect;
 enum { DHDR_NATIVE_DUAL = 1, DHDR_NATIVE_POINT_FILTER = 2 };   /* create: DUAL = may use dual-source
                                                                   blending; options: POINT_FILTER */

@@ -20,6 +20,7 @@
 #include "../hle/hle.h"
 #include "../include/guest.h"
 #include "../hle/text_input.h"
+#include "perf_log.h"
 
 static uint32_t pixels[1024 * 1024];
 static int initialized, disabled, resize_pending;
@@ -194,6 +195,17 @@ static void window_measure(void)
     if (sdl_window && (!(SDL_GetWindowFlags(sdl_window) & SDL_WINDOW_MINIMIZED) || getenv("DHD_CAPTURE_PRESENTED")))
         SDL_GetWindowSizeInPixels(sdl_window, &w, &h);
     SDL_SetAtomicInt(&drawable, (w > 0 ? w : 0) << 16 | (h > 0 ? h : 0));
+    /* perf_log's lines count play with the window in front: the focus, shown and not minimised
+       (DHD_TEST_INPUT: a test desktop's window never has the focus, so shown is enough), and the
+       refresh of the display it is on. */
+    if (!sdl_window) return;
+    static int test_input = -1;
+    if (test_input < 0) test_input = getenv("DHD_TEST_INPUT") != NULL;
+    SDL_WindowFlags flags = SDL_GetWindowFlags(sdl_window);
+    int front = !(flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN | SDL_WINDOW_OCCLUDED)) &&
+                (test_input || (flags & SDL_WINDOW_INPUT_FOCUS));
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(sdl_window));
+    perf_window(front, mode ? mode->refresh_rate : 0);
 }
 
 /* SDL's window events as SDL sends them (on Windows inside a modal drag or resize too, which the
@@ -559,10 +571,36 @@ void gs_window_close(void)
     exit(0);
 }
 
-/* The window's events are the SDL thread's (sdl_host.c); here the game ends once the window closed. */
+static void hide_window(void *unused)
+{
+    (void)unused;
+    if (sdl_window) SDL_HideWindow(sdl_window);
+}
+
+/* The GPU device was lost (finding 171): the driver reset or removed it (a GPU that stopped
+   responding, a driver crash or update). Nothing can be drawn any more, and the renderer's objects
+   live on that device for the process's life, so the game ends with a message instead of running
+   on with a frozen picture. On the game thread, from gs_pump_messages; the reason is in the log
+   already (dhdr_device_lost). */
+static void graphics_lost(void)
+{
+    hle_log("gs: the GPU device was lost; the game ends\n");
+    sdl_host_run(hide_window, NULL);  /* the box over the desktop, not under a borderless window */
+    host_error_box("Downhill Revived",
+                   "The graphics driver stopped responding and was reset, so Downhill Revived can't show "
+                   "pictures any more and has to close.\n\n"
+                   "Update the graphics driver (from the maker of your computer or of its graphics chip) "
+                   "and start the game again. If it happens again, please report it with dhd.log, which "
+                   "is next to the game.");
+    exit(1);
+}
+
+/* The window's events are the SDL thread's (sdl_host.c); here the game ends once the window closed,
+   or with a message once the GPU device was lost. */
 void gs_pump_messages(void)
 {
     if (window_closed) exit(0);
+    if (gs_gpu_lost()) graphics_lost();
 }
 
 /* The window's drawable size in pixels (the renderer's GsWindow.size, any thread): 0 x 0 without a
@@ -695,6 +733,13 @@ void gs_mouse_event(const void *event)
     MOUSE_UNLOCK();
 }
 
+void gs_mouse_touchscreen(void)
+{
+    MOUSE_LOCK();
+    mouse.state.seen = 1;   /* no move: the cursor stays hidden */
+    MOUSE_UNLOCK();
+}
+
 /* SDL thread, every pass of its loop: a new title (gs_window_title); text input while a text
    field is open; the cursor shows for 3 s after the mouse was used, never while a race is ridden
    (the game's controls in riding mode, D_0029E290). */
@@ -823,8 +868,32 @@ static void bench_vsync(void)
     if (quit && !strcmp(quit, "1")) host_exit(0);
 }
 
-const uint32_t *movie_picture(unsigned *width, unsigned *height);  /* port/hle/movie.c */
+const uint32_t *movie_picture(unsigned *width, unsigned *height, unsigned *rows);  /* port/hle/movie.c */
+int movie_playing(void);
+void movie_drop(void);
+
+/* The movie's picture to show this field, or NULL. The PS2's player shows its pictures from a
+   buffer of its own (DISPFB2 at page 280, func_0020BDA0), which stays on screen after the movie,
+   between the startup movies and after a skip, until the game sets its display again: the GS reset
+   before the next screen, or that screen's own display (finding 160). The port's player never
+   touches the GS, so the game's display registers hold what they held before the movie (the
+   memory card check card, or nothing after the reset before the movies). So the movie's last
+   picture stays while the registers are the ones the game kept during the movie and no GS reset
+   came since. */
+static const uint32_t *movie_shown(const uint64_t mmio[15], unsigned *width, unsigned *height, unsigned *rows)
+{
+    static uint64_t during[15], resets;
+    const uint32_t *movie = movie_picture(width, height, rows);
+    if (!movie) return NULL;
+    if (movie_playing()) memcpy(during, mmio, sizeof during), resets = gs.resets;
+    else if (resets != gs.resets || memcmp(during, mmio, sizeof during)) {
+        movie_drop();
+        return NULL;
+    }
+    return movie;
+}
 int host_widescreen_flat_limit(void);  /* port/hle/host.c */
+int host_widescreen_card_drawn(void);
 
 /* The graphics didn't start. The game would go on with no window (heard, never seen): instead a
    message says why and the game ends. Tools that want no window set DHD_HEADLESS and never get here. */
@@ -858,7 +927,7 @@ static void present_registers(const uint64_t *mmio)
 typedef struct {
     uint64_t mmio[15];
     double due, began;  /* pacing_handed */
-    int32_t resize, flat_limit;
+    int32_t resize, flat_limit, card_2d;
 } PresentMark;
 
 /* The GS owner, once the drawing queued before the picture has run. */
@@ -868,8 +937,8 @@ static void present_marked(const void *payload)
     unsigned width, height;
     memcpy(&m, payload, sizeof m);
     present_registers(m.mmio);
-    gs_native_movie(&gs, NULL, 0, 0);
-    gs_native_vsync_handed(&gs, &width, &height, m.resize, m.due, m.began, m.flat_limit);
+    gs_native_movie(&gs, NULL, 0, 0, 0);
+    gs_native_vsync_handed(&gs, &width, &height, m.resize, m.due, m.began, m.flat_limit, m.card_2d);
 }
 
 void gs_vsync(void)
@@ -888,6 +957,7 @@ void gs_vsync(void)
         profile_start = host_wall_seconds();
     }
     bench_vsync();
+    perf_field(*(volatile int32_t *)GUEST(0x0829E290) != 0);  /* a race ridden (D_0029E290), or the menus */
     gs_pump_messages();  /* first: the close button ends the game even with no renderer */
     if (disabled) return;
     if (app_background || surface_dropped) app_background_wait();
@@ -897,8 +967,8 @@ void gs_vsync(void)
     uint64_t mmio[15];
     for (unsigned addr = 0; addr <= 0xE0; addr += 16) mmio[addr / 16] = *(volatile uint64_t *)GUEST(0x12000000 + addr);
     /* While a movie plays (port/hle/movie.c, finding 055) its picture is shown instead. */
-    unsigned movie_width, movie_height;
-    const uint32_t *movie = movie_picture(&movie_width, &movie_height);
+    unsigned movie_width, movie_height, movie_rows;
+    const uint32_t *movie = movie_shown(mmio, &movie_width, &movie_height, &movie_rows);
     /* Deferred vsync: the GS worker hands the native picture on after the drawing queued before it;
        the game thread goes on. A movie or the exact renderer waits for the drawing here instead.
        (Capture and DHD_PROFILE turn deferral off: they read the GS below.) */
@@ -908,6 +978,7 @@ void gs_vsync(void)
             memcpy(m.mmio, mmio, sizeof m.mmio);
             pacing_handed(&m.due, &m.began);
             m.resize = resize_pending, m.flat_limit = host_widescreen_flat_limit();
+            m.card_2d = host_widescreen_card_drawn();
             resize_pending = 0;
             graphics_present_marked = present_marked;
             graphics_present(&m, sizeof m);
@@ -920,7 +991,7 @@ void gs_vsync(void)
     int gpu_frame = 1;
     if (gs_gpu_native(&gs)) {
         /* The native renderer's thread draws and presents; capture waits for its picture. */
-        gs_native_movie(&gs, movie, movie_width, movie_height);
+        gs_native_movie(&gs, movie, movie_width, movie_height, movie_rows);
         gs_native_vsync(&gs, &width, &height, resize_pending);
         resize_pending = 0;
     } else {

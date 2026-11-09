@@ -86,8 +86,12 @@ def guest_tests():
     run('member-abi', [member_test])
     run('autopad', [HLE / 'autopad.c', HLE / 'test_autopad.c'])
     run('game-options', [HLE / 'game_options.c', HLE / 'test_game_options.c'])
-    run('keyboard', [HLE / 'keyboard.c', HLE / 'controls.c', HLE / 'test_keyboard.c'])  # layout and steering ramp (finding 059)
+    run('settings-tabs', [HLE / 'test_settings_tabs.c'])
+    run('keyboard', [HLE / 'keyboard.c', HLE / 'test_keyboard.c'])  # layout and steering ramp (finding 059)
     run('sif', [HLE / 'sif.c', HLE / 'test_sif.c'])
+    run('pad-snapshot', [HLE / 'test_pad_snapshot.c'])
+    run('state-bundle', [HLE / 'test_state_bundle.c'])  # STATE bundles fit a datagram (finding 169)
+    run('puppet-predict', [HLE / 'test_puppet_predict.c'])  # puppets shown at the present (finding 169)
     run('timer', [HLE / 'timer.c', HLE / 'test_timer.c'])
     run('sound', [HLE / 'sound.c', HLE / 'test_sound.c'], defines=['SND_NO_HOST'])
 
@@ -115,11 +119,14 @@ def host_tests():
         env={'DHD_MTVU': '1'})
     # SDL3 starts and enumerates the controllers (none needed): gamepad.c's smoke test, with the
     # SDL thread (host/sdl_host.c), the keyboard and the text field it feeds (W11)
-    run('gamepad', [HLE / 'gamepad.c', HLE / 'keyboard.c', HLE / 'controls.c', HLE / 'text_input.c',
-                    ROOT / 'port/host/sdl_host.c', HLE / 'test_gamepad.c'], sdl=True, low=True)
-    # host_pad_vibrate's preview gate (finding 141): the game's own motor values must not cancel PC
-    # SETTINGS' buzz, and switching Vibration off stops at once. Pure logic, no device.
-    run('pad-preview', [HLE / 'test_pad_preview.c'])
+    # and gamepad.c's reading of what SDL reports: the pads' kinds and the sticks' dead zone (finding 134)
+    gamepad = testprog.host('gamepad', [HLE / 'gamepad.c', HLE / 'keyboard.c', HLE / 'text_input.c',
+                                        ROOT / 'port/host/sdl_host.c', HLE / 'test_gamepad.c'], sdl=True, low=True)
+    testprog.run(gamepad)
+    testprog.run(gamepad, 'mapping')
+    # the touch controls' rules: scaling, flick lanes, sprint and resume guards, the trick stick,
+    # the pause rows' steps (finding 141)
+    run('touch', [HLE / 'touch.c', HLE / 'test_touch.c'])
     # voice chat (finding 131): voice.c with the real libopus, the jitter queue, mix and rules
     if testprog.WINDOWS:
         import test_voice
@@ -137,7 +144,7 @@ def main():
     guest_tests()
     host_tests()
     scripts = ['test_rider_time', 'test_rider_interaction', 'test_npc_animation', 'test_rider_input', 'test_float',
-               'test_port_headers']
+               'test_port_headers', 'test_patch_guard']
     if os.environ.get('DHD_PCSX2_VU'):
         scripts += ['test_vu1_pcsx2', 'test_vu0_pcsx2']
     for script in scripts:

@@ -32,7 +32,7 @@
 #include "gpu.h"
 #ifdef _WIN32
 #include <windows.h>
-#include <dxgi.h>
+#include <dxgi1_6.h>
 #endif
 #include <SDL3/SDL_atomic.h>
 #include <SDL3/SDL_timer.h>  /* the performance counter */
@@ -40,9 +40,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dhd_render.h"   /* -Iport/render/include */
+#include "dhd_render_ext.h"   /* dhdr_device_lost */
+#include "perf_log.h"     /* the perf: lines (finding 129) */
 
 #ifndef DHD_GS_TEST_BUILD
 #include "../net/net.h"
+int touch_host_overlay(float *items, int max, float *width_mm, float *height_mm);  /* port/host/touch_host.c */
 #endif
 
 /* PC SETTINGS' FPS & Ping (DHD_PERF_COUNTER, finding 120): read at the first picture and again
@@ -56,16 +59,36 @@ void gs_gpu_counter_apply(void)
     SDL_SetAtomicInt(&counter_on, v && atoi(v) != 0);
 }
 
-static void counter_present(DhdrSurface *surface)
+/* The touch controls over the picture (port/host/touch_host.c, finding 141): their shapes for the
+   next picture. The native renderer draws them in its present pass (finding 146), so it hands
+   them over before dhdr_native_present; the exact one draws them in dhdr_surface_present. */
+static void touch_present(DhdrSurface *surface)
+{
+#ifndef DHD_GS_TEST_BUILD
+    static float shapes[512 * 16];
+    float width_mm = 0, height_mm = 0;
+    int n = touch_host_overlay(shapes, 512, &width_mm, &height_mm);
+    dhdr_surface_touch(surface, shapes, (uint32_t)n, width_mm, height_mm);
+#else
+    (void)surface;
+#endif
+}
+
+/* touched: touch_present ran for this picture already (the native renderer's). */
+static void counter_present(DhdrSurface *surface, int touched)
 {
     if (SDL_GetAtomicInt(&counter_on) < 0) gs_gpu_counter_apply();
-    int enabled = SDL_GetAtomicInt(&counter_on), ping = -1;
+    int enabled = SDL_GetAtomicInt(&counter_on), ms = -1, riders = 0;
 #ifndef DHD_GS_TEST_BUILD
-    if (enabled) ping = net_ping_ms();
+    /* in a race the other riders' delay, else the room server's ping (finding 169) */
+    if (enabled && (ms = net_riders_ms()) >= 0) riders = 1;
+    else if (enabled) ms = net_ping_ms();
 #endif
-    dhdr_surface_counter(surface, enabled, ping,
+    dhdr_surface_counter(surface, enabled, ms, riders,
                          (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency());
+    if (!touched) touch_present(surface);
     dhdr_surface_present(surface);
+    perf_presented();  /* every picture shown, by either renderer */
 }
 
 /* Rust's log lines (one UTF-8 line, no newline), from any thread: stderr, which is dhd.log in the
@@ -171,9 +194,27 @@ static int op_draw_skipped(const Gs *g)
 /* The process's one device (the first dhdr_device_init that succeeded): its options, for the
    optrace header (op_adapter), and DXGI's view of its adapter: the dedicated memory (the texture
    pack's and the resolution scale's budget, gpu_rust_native.inc) and the user-mode driver version. */
-static struct { int made; uint32_t flags, vendor_id, device_id; uint64_t memory, driver_version; } device;
+static struct { int made; uint32_t flags, vendor_id, device_id; uint64_t memory, shared, driver_version; } device;
 
 #ifdef _WIN32
+/* DXGI orders hardware by power/performance; keep EnumAdapters1 for the default. */
+static int dxgi_preferred(int integrated, DXGI_ADAPTER_DESC1 *desc)
+{
+    IDXGIFactory6 *factory = NULL;
+    IDXGIAdapter1 *adapter = NULL;
+    int found = 0;
+    if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory6, (void **)&factory))) return 0;
+    for (UINT i = 0; SUCCEEDED(IDXGIFactory6_EnumAdapterByGpuPreference(factory, i,
+             integrated ? DXGI_GPU_PREFERENCE_MINIMUM_POWER : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+             &IID_IDXGIAdapter1, (void **)&adapter)); i++) {
+        found = SUCCEEDED(IDXGIAdapter1_GetDesc1(adapter, desc)) && !(desc->Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
+        IDXGIAdapter1_Release(adapter);
+        if (found) break;
+    }
+    IDXGIFactory6_Release(factory);
+    return found;
+}
+
 /* A DXGI adapter's description and UMD version: the first adapter (Windows' default, the game's
    GPU) when vendor is 0, else the one with these PCI ids. 0 when there is none. */
 static int dxgi_adapter(unsigned vendor, unsigned id, DXGI_ADAPTER_DESC1 *desc, uint64_t *umd)
@@ -232,6 +273,16 @@ static int device_init(void)
     DXGI_ADAPTER_DESC1 desc;
     uint64_t umd;
     int known = dxgi_adapter(0, 0, &desc, &umd);
+    int preferred = choice && (!strcmp(choice, "integrated") || !strcmp(choice, "discrete"));
+    if (preferred) {
+        if (!dxgi_preferred(!strcmp(choice, "integrated"), &desc)) {
+            fprintf(stderr, "gs: adapter preference %s unavailable\n", choice);
+            return 0;
+        }
+        d.vendor_id = desc.VendorId; d.device_id = desc.DeviceId;
+        fprintf(stderr, "gs: GPU preference %s (DXGI %s, PCI %04x:%04x)\n", choice,
+                !strcmp(choice, "integrated") ? "minimum power" : "high performance", d.vendor_id, d.device_id);
+    }
     if (choice ? !strcmp(choice, "fallback") : known && desc.VendorId == 0x1414 && desc.DeviceId == 0x8C)
         d.flags |= DHDR_DEV_FALLBACK;
     else if (!choice && known) { d.vendor_id = desc.VendorId; d.device_id = desc.DeviceId; }
@@ -249,7 +300,7 @@ static int device_init(void)
     if (d.flags & DHDR_DEV_FALLBACK) { device.vendor_id = 0x1414; device.device_id = 0x8C; }
     else { device.vendor_id = d.vendor_id; device.device_id = d.device_id; }
     if (device.vendor_id && dxgi_adapter(device.vendor_id, device.device_id, &desc, &device.driver_version))
-        device.memory = (uint64_t)desc.DedicatedVideoMemory;
+        device.memory = (uint64_t)desc.DedicatedVideoMemory, device.shared = (uint64_t)desc.SharedSystemMemory;
 #endif
     fprintf(stderr, "gs: renderer %s on %s\n", dhdr_version(), dhdr_adapter_name());
     fflush(stderr);
@@ -291,6 +342,18 @@ static void window_size(const GsWindow *window, unsigned *width, unsigned *heigh
     *width = *height = 0;
     if (window->size) window->size(width, height);
 }
+
+/* A lost device (finding 171): a present failed and the renderer says the device is gone (the driver
+   reset or removed it; every later call draws nothing). Set from the presenting thread; present.c's
+   gs_pump_messages reads it on the game thread (gs_gpu_lost) and ends the game with a message. */
+static SDL_AtomicInt device_lost;
+
+static void device_lost_check(void)
+{
+    if (dhdr_device_lost()) SDL_SetAtomicInt(&device_lost, 1);
+}
+
+int gs_gpu_lost(void) { return SDL_GetAtomicInt(&device_lost); }
 
 /* ---- the native renderer (DHD_RENDER=native) ---- */
 
@@ -452,9 +515,16 @@ int gs_gpu_present(Gs *g, const uint32_t *pixels, unsigned width, unsigned heigh
     if (pixels && (!width || !height || width > 1024 || height > 1024)) return 0;
     if (!pixels && !p->e.display_valid) return 0;
     int r = dhdr_present_exact(p->surface, p->x, pixels, width, height, window_width, window_height);
-    if (r < 0) return 0;
+    if (r < 0) {
+        device_lost_check();
+        return 0;
+    }
     if (pixels) p->e.display_valid = 1;
-    if (r == 1) counter_present(p->surface);
+    if (r == 1) {
+        perf_render_size(pixels ? "exact (a movie or the CPU scanout)" : "exact", 1, width, height, window_width,
+                         window_height, 0, 0);
+        counter_present(p->surface, 0);
+    }
     return 1;
 }
 

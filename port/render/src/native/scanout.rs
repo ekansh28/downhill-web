@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 /// The scanout's native objects (init.rs's scanout_pipe and scanout_layout).
 pub struct ScanoutObjects<'a> {
     pub pipeline: &'a wgpu::ComputePipeline,
+    pub fast_pipeline: &'a wgpu::ComputePipeline,
     pub layout: &'a wgpu::BindGroupLayout,
 }
 
@@ -112,7 +113,8 @@ impl Display {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT, // `black` clears it
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -150,6 +152,27 @@ impl Display {
         true
     }
 
+    /// The display off (no read circuit on, as after a GS reset; finding 160): the displayed picture
+    /// black, at the size it had, cleared in `encoder` (no pass may be open on it). False before the
+    /// first picture: nothing to show yet.
+    pub fn black(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        let Some(t) = &self.target else { return false };
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native display off"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &t.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        true
+    }
+
     /// native_scanout: the display surface (`source`, its view, at `scale`) through the 12
     /// display words into the display texture, recorded into `encoder` (no pass may be open on
     /// it). The caller has checked the picture has a display surface with a texture. False: not
@@ -164,6 +187,15 @@ impl Display {
         d[8] = scale;
         if !self.display_size(gpu, d[5], d[6]) {
             return false;
+        }
+        // Masked GS origins contribute at most 2047*8; an invocation contributes
+        // at most 32767. Thus the fast shader's dividend is below 65536.
+        // ceil(65536 / divisor) overestimates its quotient by at most one;
+        // one integer correction gives the exact remainder without GPU division.
+        let fast = (1..=8).contains(&scale) && d[5] <= 32768 && d[6] <= 32768;
+        if fast {
+            d[9] = 2048 * scale;
+            d[10] = 65536u32.div_ceil(d[9]);
         }
         let Some(t) = &self.target else { return false };
         let offset = arenas.constants(struct_bytes(&d));
@@ -183,10 +215,11 @@ impl Display {
         let times = gputimes::slot(gpu, gputimes::SCANOUT);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None, timestamp_writes: times.as_ref().map(gputimes::Slot::compute) });
-        pass.set_pipeline(o.pipeline);
+        pass.set_pipeline(if fast { o.fast_pipeline } else { o.pipeline });
         pass.set_bind_group(0, uniforms, &[offset]);
         pass.set_bind_group(1, group, &[]);
-        pass.dispatch_workgroups(d[5].div_ceil(8), d[6].div_ceil(8), 1);
+        let rows = if fast && d[7] == 1 { d[6].div_ceil(2) } else { d[6] };
+        pass.dispatch_workgroups(d[5].div_ceil(8), rows.div_ceil(8), 1);
         true
     }
 }

@@ -1,4 +1,4 @@
-/* The host interface of the port (finding 075, phase 2): the OS services the module side uses,
+/* The host interface of the port (finding 081, phase 2): the OS services the module side uses,
    the game's code and runtime and the PS2 system's own code (port/runtime, port/hle). The module
    is wasm32 later and the host is native, so nothing here names a host type. Guest addresses are
    uint32_t; handles are small integers, 0 is "none"; the one host object the module keeps is the
@@ -191,9 +191,6 @@ int host_service_host_poll_dump(void);
 void host_service_host_settings_load(void);
 int host_service_host_setting_save(uint32_t a0, uint32_t a1);
 int host_service_host_setting_locked(uint32_t a0);
-/* The controls' bindings changed (controls_menu.c, finding 141): the host re-reads the active
-   profile's dhd.ini key and applies it to the keyboard and the controllers. */
-void host_service_controls_apply(void);
 void host_service_host_pad_device(int a0, uint32_t a1);
 void host_service_host_pad_vibrate(int a0, int a1, int a2);
 void host_service_graphics_feed(int a0, uint32_t a1, uint32_t a2);
@@ -215,6 +212,17 @@ void host_service_gs_native_view(int view);  /* gs/present.c's gs_native_view (o
 void host_service_gs_window_apply(void);
 void host_service_gs_present_options_apply(void);
 void host_service_gs_window_close(void);
+/* The resolution scale the pictures are drawn at (asked 0), or the one asked for (asked 1:
+   DHD_SCALE's, or DHD_SCALE=window's match before the device's limit); 0 before the first
+   picture and without the native renderer (gs/gpu_rust_native.inc; PC SETTINGS shows it). */
+int host_service_gs_scale(int asked);
+/* 1 when this build offers online play: the one switch, the host's, so the core is the same on
+   every platform (finding 143). Desktop builds: 1. Android (port/net/net.c NET_OFFERED, at compile
+   time: not until phones are fast enough and the touch controls are ready) and the browser
+   (port/web/www/net.js: its CSP blocks the race server's socket): 0, and no setting turns it on.
+   At 0 the main menu has no ONLINE row, DHD_NET_* starts no online race, and the connections
+   below refuse. */
+int host_service_net_offered(void);
 void host_service_net_init(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3);
 int host_service_net_create_room(void);
 int host_service_net_join_room(uint32_t a0);
@@ -260,6 +268,11 @@ uint64_t host_service_gs_priv_read(unsigned a0);
 void host_service_gs_priv_write(unsigned a0, uint64_t a1);
 uint32_t host_service_gs_read_image(uint32_t a0, uint32_t a1);
 uint32_t host_service_gs_defer_read_image(uint32_t a0, uint32_t a1);
+/* sceGsExecStoreImage queued behind the drawing (graphics_queue.c, finding 148): its 28-word
+   packet, the read to destination and the unmask. 1 if queued, 0 if nothing was and the caller
+   must wait and read; settle writes the queued reads' bytes. */
+uint32_t host_service_gs_store_image(uint32_t packet, uint32_t destination, uint32_t bytes);
+void host_service_gs_store_settle(void);
 uint64_t host_service_gs_register(unsigned reg);
 void host_service_net_set_room(uint32_t address);
 uint64_t host_service_net_hash_ranges(uint32_t address, int count);
@@ -293,7 +306,10 @@ double host_pacing_period(void);
 int host_vu1_snapshot(uint32_t address);
 void host_vu1_file(uint32_t address);
 
-void host_frame_video(double aspect, int flat_limit);
+/* Once a vsync, from the core: widescreen's shape and card limit (host_widescreen_aspect,
+   host_widescreen_flat_limit). Returns 1 when the next field's 2D is to be drawn for a card,
+   unmapped (widescreen.c's card mode, finding 140). */
+int host_frame_video(double aspect, int flat_limit);
 
 void host_service_host_backtrace(void);
 int host_service_host_game_options_read(uint32_t a0, uint32_t a1);
@@ -323,6 +339,19 @@ int host_service_text_input_edit(uint32_t a0, int a1, uint32_t a2);
    codes), the window has the keyboard and no text field is open: the online chat's Y. */
 int host_service_key_held(int key);
 int host_service_clipboard_set(uint32_t text);  /* 1 when the text is on the clipboard */
+
+/* ---- keyboard and controller bindings (port/hle/controls_settings.c, finding 157) ----
+   device: 0 the keyboard, 1 Controller 1, 2 Controller 2 (controls_table.h's CONTROL_*). */
+int host_service_controls_layout(int device, uint32_t out);  /* the layout played with into out (52 bytes); 0: none */
+int host_service_controls_pad(int player);  /* player 1's or 2's controller: its PAD_KIND_* + 1, 0 none */
+/* A change (CONTROL_ASSIGN ...) by dhd_settings' rules, saved and played with at once: CONTROL_REFUSED,
+   _UNCHANGED or _CHANGED; what the page says into message (size bytes). */
+int host_service_controls_change(int device, int edit, int target, int slot, int input, uint32_t message, int size);
+/* The wait for a key or button: command 1 begins, 0 asks (the input pressed since, -2 Esc, -1
+   nothing yet), 2: 1 while anything is still held. */
+int host_service_controls_capture(int device, int command);
+/* A controller's state (hle.h GamepadRaw, 16 bytes) through player's layout into a HostPad (tests). */
+void host_service_controls_map(int player, uint32_t raw, uint32_t out);
 void host_service_movie_start(uint32_t name, uint32_t lsn, uint32_t size, int audio, int found);
 int host_service_movie_update(int keep);
 
@@ -345,5 +374,29 @@ void host_service_presence(uint32_t state);
    `out` (a guest span of 8 bytes or more), taken -- at most once. 1 when there was one (see
    presence/src/lib.rs's `joined`). The browser and Android leave `out` and return 0. */
 int host_service_presence_join(uint32_t out);
+
+/* The touch controls (finding 141; port/host/touch_host.c, port/hle/touch.c): the core's side
+   (pad.c) once a field. In: what the overlay reads from the game (the race HUD hook, the rider's
+   air flag) and the clocks; a TOUCH_COMMAND_* from the TOUCH CONTROLS pages. Out: where the HUD
+   goes (0 the game's place, 1 moved for the right hand, 2 for the left), the online panel's Leave
+   race, and the trick-stick hint's hold (the core waits while it is set). A host without touch
+   leaves the outputs as they are (0). */
+enum { TOUCH_COMMAND_NONE, TOUCH_COMMAND_SETTINGS, TOUCH_COMMAND_EDIT, TOUCH_COMMAND_HINTS, TOUCH_COMMAND_TILT_CENTRE };
+typedef struct {
+    double race_ms;        /* race time, ms (1/60 s fields; stops while paused) */
+    int32_t race_hud;      /* the race HUD was drawn since the last call, on the race screen */
+    int32_t air;           /* player 1's rider is in the air */
+    int32_t online;        /* an online race */
+    int32_t clock_moving;  /* the race clock advanced since the last call */
+    int32_t pause_row[3];  /* the offline pause menu's rows of RESUME, RE-START and QUIT (-1: none) */
+    int32_t fps;           /* VBLANKs a second */
+    uint32_t vsync;        /* VBLANKs so far */
+    int32_t command;       /* TOUCH_COMMAND_* */
+    int32_t hud_mode;      /* out */
+    int32_t leave_race;    /* out */
+    int32_t freeze;        /* out */
+    int32_t reserved;
+} HostTouch;  /* 64 bytes */
+void host_service_touch_field(uint32_t state);
 
 #endif

@@ -93,17 +93,21 @@ pub struct Objects {
     pub uniform_layout: wgpu::BindGroupLayout,
     /// The draw's group 1: binding 0 a filterable 2D texture, binding 1 a filtering sampler.
     pub texture_layout: wgpu::BindGroupLayout,
+    /// The `_u` draws' group 1 (shared.rs's texels layout): an R32Uint texture, a non-filtering sampler.
+    pub texels_layout: wgpu::BindGroupLayout,
     /// The blit's group 1: two unfilterable 2D textures (source, previous).
     pub blit_layout: wgpu::BindGroupLayout,
     /// Scanout's group 1: an unfilterable 2D texture and a write-only RGBA8 storage texture.
     pub scanout_layout: wgpu::BindGroupLayout,
-    /// Conversion's group 1: 0 the inverse table (read-only storage), 1-5 unfilterable textures,
+    /// Conversion's group 1: 0 the inverse table (read-only storage), 1 the base (R32Uint), 2-5 unfilterable textures,
     /// 6-9 depth textures, 10 a write-only RGBA8 storage texture.
     pub convert_layout: wgpu::BindGroupLayout,
     /// Depth growth's group 1: a depth texture.
     pub grow_layout: wgpu::BindGroupLayout,
     /// (uniform, texture): draws and the present pass.
     pub draw_layout: wgpu::PipelineLayout,
+    /// (uniform, texels): draws from a decoded texture (`_u` entry points).
+    pub texels_draw_layout: wgpu::PipelineLayout,
     /// (uniform, blit)
     pub blit_pipeline_layout: wgpu::PipelineLayout,
     /// (uniform, scanout)
@@ -120,10 +124,17 @@ pub struct Objects {
     present_rgba: wgpu::RenderPipeline,
     /// the same into BGRA8, made at the first present on a surface without RGBA8 (Apple's)
     present_bgra: std::sync::OnceLock<wgpu::RenderPipeline>,
+    /// Widescreen's fill beside a 4:3 picture (present.rs): `present_shrink` (draw layout) into
+    /// the small RGBA8 texture, and `present_fill` into RGBA8 or BGRA8; made at the first filled picture
+    fill_shrink: std::sync::OnceLock<wgpu::RenderPipeline>,
+    fill_rgba: std::sync::OnceLock<wgpu::RenderPipeline>,
+    fill_bgra: std::sync::OnceLock<wgpu::RenderPipeline>,
     /// `native_grow_depth` (grow layout; depth only, writes Depth32Float with Always)
     pub grow_pipe: wgpu::RenderPipeline,
     /// `native_scanout` (scanout layout)
     pub scanout_pipe: wgpu::ComputePipeline,
+    /// Bounded GS scanout: reciprocal remainder and duplicated-row reuse.
+    pub scanout_fast_pipe: wgpu::ComputePipeline,
     /// `native_convert` (convert layout)
     pub convert_pipe: wgpu::ComputePipeline,
     /// The inverse table (`inverse_table`), 32768 bytes, Storage | CopyDst, written at creation.
@@ -368,13 +379,13 @@ fn texture_entry(binding: u32, stage: wgpu::ShaderStages, sample_type: wgpu::Tex
     }
 }
 
-fn storage_texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn storage_texture_entry(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::StorageTexture {
             access: wgpu::StorageTextureAccess::WriteOnly,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format,
             view_dimension: wgpu::TextureViewDimension::D2,
         },
         count: None,
@@ -452,6 +463,15 @@ impl Objects {
         self.present_bgra.get_or_init(|| fullscreen_pipeline(gpu, &self.module, &self.draw_layout, "present_pixel", Some(format)))
     }
 
+    /// The fill's pipelines (present.rs): `present_shrink` into the small RGBA8 texture, and
+    /// `present_fill` into a target of `format` (as `present_pipe`).
+    pub fn fill_pipes(&self, gpu: &Gpu, format: wgpu::TextureFormat) -> (&wgpu::RenderPipeline, &wgpu::RenderPipeline) {
+        let make = |entry: &str, format| fullscreen_pipeline(gpu, &self.module, &self.draw_layout, entry, Some(format));
+        let shrink = self.fill_shrink.get_or_init(|| make("present_shrink", wgpu::TextureFormat::Rgba8Unorm));
+        let fill = if format == wgpu::TextureFormat::Rgba8Unorm { &self.fill_rgba } else { &self.fill_bgra };
+        (shrink, fill.get_or_init(|| make("present_fill", format)))
+    }
+
     fn build(gpu: &Gpu, dual: bool) -> Objects {
         use crate::shaders::{NATIVE, NATIVE_DUAL};
         use wgpu::ShaderStages as S;
@@ -482,8 +502,9 @@ impl Objects {
                 count: None,
             },
         ]);
+        let texels_layout = layout(gpu, &crate::native::shared::texels_entries());
         let blit_layout = layout(gpu, &[texture_entry(0, S::FRAGMENT, unfilterable), texture_entry(1, S::FRAGMENT, unfilterable)]);
-        let scanout_layout = layout(gpu, &[texture_entry(0, S::COMPUTE, unfilterable), storage_texture_entry(1)]);
+        let scanout_layout = layout(gpu, &[texture_entry(0, S::COMPUTE, unfilterable), storage_texture_entry(1, wgpu::TextureFormat::Rgba8Unorm)]);
         let mut convert = Vec::with_capacity(11);
         convert.push(wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -495,17 +516,20 @@ impl Objects {
             },
             count: None,
         });
-        for i in 1..6 {
+        convert.push(texture_entry(1, S::COMPUTE, T::Uint)); // the base: a decoded texture's texels
+        for i in 2..6 {
             convert.push(texture_entry(i, S::COMPUTE, unfilterable));
         }
         for i in 6..10 {
             convert.push(texture_entry(i, S::COMPUTE, T::Depth));
         }
-        convert.push(storage_texture_entry(10));
+        // A converted texture holds texels as a decoded one does (R32Uint, convert.rs).
+        convert.push(storage_texture_entry(10, wgpu::TextureFormat::R32Uint));
         let convert_layout = layout(gpu, &convert);
         let grow_layout = layout(gpu, &[texture_entry(0, S::FRAGMENT, T::Depth)]);
 
         let draw_layout = pipeline_layout(gpu, &uniform_layout, &texture_layout);
+        let texels_draw_layout = pipeline_layout(gpu, &uniform_layout, &texels_layout);
         let blit_pipeline_layout = pipeline_layout(gpu, &uniform_layout, &blit_layout);
         let scanout_pipeline_layout = pipeline_layout(gpu, &uniform_layout, &scanout_layout);
         let convert_pipeline_layout = pipeline_layout(gpu, &uniform_layout, &convert_layout);
@@ -517,6 +541,7 @@ impl Objects {
         let present_rgba = fullscreen_pipeline(gpu, &main, &draw_layout, "present_pixel", rgba);
         let grow_pipe = fullscreen_pipeline(gpu, &main, &grow_pipeline_layout, "native_grow_depth", None);
         let scanout_pipe = compute_pipeline(gpu, &main, &scanout_pipeline_layout, "native_scanout");
+        let scanout_fast_pipe = compute_pipeline(gpu, &main, &scanout_pipeline_layout, "native_scanout_fast");
         let convert_pipe = compute_pipeline(gpu, &main, &convert_pipeline_layout, "native_convert");
 
         let table = inverse_table();
@@ -538,11 +563,13 @@ impl Objects {
             dual_module,
             uniform_layout,
             texture_layout,
+            texels_layout,
             blit_layout,
             scanout_layout,
             convert_layout,
             grow_layout,
             draw_layout,
+            texels_draw_layout,
             blit_pipeline_layout,
             scanout_pipeline_layout,
             convert_pipeline_layout,
@@ -551,8 +578,12 @@ impl Objects {
             upload_pipe,
             present_rgba,
             present_bgra: std::sync::OnceLock::new(),
+            fill_shrink: std::sync::OnceLock::new(),
+            fill_rgba: std::sync::OnceLock::new(),
+            fill_bgra: std::sync::OnceLock::new(),
             grow_pipe,
             scanout_pipe,
+            scanout_fast_pipe,
             convert_pipe,
             inverse,
         }
@@ -582,7 +613,7 @@ impl Native {
         let objects = Objects::create(gpu, flags & DHDR_NATIVE_DUAL != 0)?;
         let mut pipelines = Pipelines::new();
         for key in probe_keys(objects.dual) {
-            pipelines.get(gpu, &objects, key)?;
+            pipelines.get(gpu, &objects, key as u64)?;
         }
         let mut n = Native {
             gpu,

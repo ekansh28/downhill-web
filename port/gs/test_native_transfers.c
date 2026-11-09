@@ -23,6 +23,7 @@ void host_putenv_s(const char *name, const char *value) {_putenv_s(name, value);
 void pacing_handed(double *d,double *b) {*d=*b=0;}
 void pacing_present(double d,double b) {(void)d;(void)b;}
 int host_widescreen_flat_limit(void) {return 1000;}
+int host_widescreen_card_drawn(void) {return 0;}
 double host_widescreen_aspect(void) {return 16.0/9;}
 int texpack_open(const ReplaceDevice *d,uint64_t m) {(void)d; (void)m; return 0;}
 int texpack_available(void) {return 0;}
@@ -31,6 +32,9 @@ void *texpack_view(TexPackEntry *e,uint64_t f) {(void)e; (void)f; return NULL;}
 void texpack_field(uint64_t f) {}
 void texpack_report(void) {}
 int font_sharp_on(void) {return 0;}
+int font_sharp_active(void) {return 0;}
+int font_sharp_icon_style(void) {return 0;}
+int font_sharp_icon_style_latch(void) {return 0;}
 int font_sharp_match(uint64_t t) {return 0;}
 void *font_sharp_view(const ReplaceDevice *d,const uint32_t *p,unsigned w,unsigned h,uint64_t k) {(void)d; (void)p; (void)w; (void)h; (void)k; return NULL;}
 #include <stdio.h>

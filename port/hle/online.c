@@ -15,7 +15,7 @@
      clock and every PC starts the countdown then, so the GOs land together (the frame clock
      slips by the wait, kernel_pace_slip).
    - In the race this PC's controller rides rider 0, from the grid place the host has for this
-     player. About 20 times a second it sends a snapshot of the riders it runs (its own; the host
+     player. About 30 times a second it sends a snapshot of the riders it runs (its own; the host
      also the AI riders) as STATE frames; the other humans, and on the other PCs the AI, are
      puppets in AI rider slots (each PC at its player's frame rate, 60-240: snapshots carry race
      time, and every count here is of race ticks, 1/60 s fields, or wall time, never of frames;
@@ -27,11 +27,13 @@
      or they choose BACK TO THE ROOM / LEAVE THE ROOM (finding 122). */
 #include "hle.h"
 #include "menu_page.h"
+#include "../runtime/portable.h"
 #include "../gs/present.h"
 #include "../net/net.h"
 #include "../include/version.h"
 #include "../include/fps.h"
 #include "voice_rules.h"
+#include "state_bundle.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -51,9 +53,10 @@ static int race_running(void) { return EE32(PHASE) >= 2 && EE32(PHASE) <= 4; }
 
 static int npads = -1, online = -1;
 static int selected_ride;
-static int32_t selected_rider, selected_outfit[3], selected_bike[3];
-void hle_online_selected_ride(int rider, const int32_t *outfit, const int32_t *bike)
+static int32_t selected_rider, selected_outfit[3], selected_bike[3], selected_colour;
+void hle_online_selected_ride(int rider, const int32_t *outfit, const int32_t *bike, int colour)
 {
+    selected_colour = colour;
     selected_ride = 1;
     selected_rider = rider;
     memcpy(selected_outfit, outfit, sizeof selected_outfit);
@@ -64,8 +67,13 @@ static int from_menu;  /* the ONLINE menu (online_menu.c) made the connection an
 
 static int online_mode(void)
 {
-    if (online < 0)
+    if (online < 0) {
         online = getenv("DHD_NET_CREATE") != NULL || getenv("DHD_NET_JOIN") != NULL;
+        if (online && !host_service_net_offered()) {  /* Android and the browser: no online yet */
+            fprintf(stderr, "online: DHD_NET_CREATE / DHD_NET_JOIN ignored: this build offers no online play\n");
+            online = 0;
+        }
+    }
     return online;
 }
 
@@ -91,7 +99,7 @@ int pads_live(void)
     if (live < 0) {
         static const char *const scripted[] = {"DHD_PADS", "DHD_NAV", "DHD_AUTOPAD", "DHD_AUTOPAD_FRAMES",
                                                "DHD_RACE_PAD", "DHD_RACE_PAD1", "DHD_RACE_PAD2",
-                                               "DHD_RACE_PAD3", "DHD_RACE_SYNC", "DHD_KEYS"};
+                                               "DHD_RACE_PAD3", "DHD_RACE_SYNC", "DHD_KEYS", "DHD_STICKS"};
         live = !online_mode();
         for (size_t i = 0; i < sizeof scripted / sizeof *scripted; i++)
             if (getenv(scripted[i])) live = 0;
@@ -264,22 +272,25 @@ int hle_puppet_lag(char *out, int size);
 int hle_puppet_hits_taken(void);
 int hle_puppet_global(int slot), hle_puppet_local(int global), hle_puppet_owned(int slot);
 void hle_puppet_start(void);
-extern int func_001FA7C0(int bike);                       /* a bike's sound kind */
+void hle_puppet_go(double go_server_ms);
+extern int func_001FA7C0(int frame);                      /* a frame's own colour (the shop's first BIKE COLOR) */
 extern void func_001B45F8(void *timer, int kind, int ticks);  /* the race-end countdown */
 
 /* EVENT payloads (finding 047): byte 0 the version, byte 1 the type. Type 1 (a hit) is
    port/hle/puppet.c's. */
 enum {
     EVENT_VERSION = 2, EVENT_HIT = 1, EVENT_LOADED = 2, EVENT_SETUP = 3, EVENT_START = 4, EVENT_GO = 5,
-    EVENT_FINISH = 6, EVENT_RESULTS = 7,  /* 8 was 0.7.3's rematch (TRY AGAIN / NEW LEVEL in the race) */
-    /* 9: the taunts branch's EVENT_TAUNT. 10: [length, text]: a race chat line (finding 139), so chat
-       works on a server without a chat message; older clients drop it (puppet.c takes EVENT_HIT alone) */
+    EVENT_FINISH = 6, EVENT_RESULTS = 7, EVENT_PICKUP = 9,  /* 8 was 0.7.3's rematch (TRY AGAIN / NEW LEVEL in the race) */
+    /* 10: [length, text]: a race chat line (finding 139), so chat works on a server without a chat
+       message; older clients drop it (puppet.c takes EVENT_HIT alone) */
     EVENT_CHAT = 10,
     EVENT_VOICE = 11 /* [sequence 16 bits, Opus]: voice chat (finding 131, port/host/voice.c's VOICE_EVENT) */
 };
-enum { SNAPSHOT_TICKS = 3 };  /* a snapshot every 3 race ticks: 20 a second at any frame rate */
+/* Snapshots: this PC's own rider every race tick (60 a second at any frame rate), the AI riders it
+   runs every AI_SNAPSHOT_TICKS (30 a second; finding 169). */
+enum { AI_SNAPSHOT_TICKS = 2 };
 enum { NRIDERS = 10, START_LEAD_MS = 1500 };
-_Static_assert(2 + NRIDERS * 256 <= NET_FRAME_MAX, "all owned riders fit one STATE frame");
+_Static_assert(2 + STATE_BUNDLE_MAX <= NET_FRAME_MAX, "a STATE bundle fits one frame");
 #define RACE_CLOCK EE32(0x43EEC8)
 /* The race object D_0043EEC0 (func_0019F210): +8 the race clock, +0x1C finish times (race ticks)
    and +0x58 finished flags by rider slot, +0x62 finishes to apply on the next step. */
@@ -297,10 +308,11 @@ static const char *const rider_name[16] = {
 static const int regular[10] = {0, 1, 2, 3, 4, 5, 8, 10, 13, 14};
 
 /* What a player rides, as their PC's setup block has it after the menus: rider id (+0x290),
-   rider/outfit (+0x1B8, 3 words), bike (+0x11C, 3 words). */
+   rider/outfit (+0x1B8, 3 words), bike (+0x11C, 3 words: frame, fork, wheels), bike colour (+0x254,
+   the shop's BIKE COLOR; finding 128). colour -1: not sent (an EVENT_SETUP of 30 bytes). */
 typedef struct {
     int have;
-    int32_t rider, outfit[3], bike[3];
+    int32_t rider, outfit[3], bike[3], colour;
 } Ride;
 
 static struct {
@@ -322,8 +334,9 @@ static struct {
        moment; the players it still waits for (start_waiting: the first) */
     double start_entered, start_said;
     int start_announced, start_missing, start_waiting;
-    int last_sent;              /* race clock of the last snapshot sent */
-    unsigned sent, received;
+    int last_sent, last_ai_sent; /* race clock of the last snapshots sent: this PC's rider, the AI */
+    unsigned sent, received;    /* rider snapshots */
+    unsigned bundles_sent;      /* STATE messages (bundles) */
     /* the finish (global rider ids: humans 0..nslots-1, AI riders their slot) */
     int finish[NRIDERS];        /* race ticks, -1: not finished */
     int reported[NRIDERS];
@@ -334,6 +347,8 @@ static struct {
     int watch_slot, watch_paused, watch_direction;
     int watched;                /* the camera has left this PC's rider: its HUD stays hidden */
     double watch_finished_at;
+    int saved_zoom, saved_zoom_rate; /* this PC's camera setting before watching (watch_cut) */
+    double cut_wait_at;         /* a cut waits while the watched rider crashes (since then) */
     unsigned ai_sent;
     int last_race_id;
     double leave_at;
@@ -341,8 +356,6 @@ static struct {
     int end_held, end_done;     /* the race-end countdown, held for the results */
     int no_bots;                /* the room's computer riders off (its "laps" option 1) */
     int cheats;                 /* the room's cheat codes on (option 2; off: hle_cheat_code) */
-    unsigned away;              /* bit s: racer s lost its connection, the server holds its slot
-                                   (NetLobby.racers_away, finding 140); its name tag says so */
     double end_done_at;
     double end_held_at;
 } on;
@@ -587,6 +600,58 @@ static void send_event(const void *payload, int n)
 static void put32(uint8_t *o, int32_t v) { memcpy(o, &v, 4); }
 static int32_t get32(const uint8_t *i) { int32_t v; memcpy(&v, i, 4); return v; }
 
+/* Pickup pool: retail allocates 150 entries in level-file order (001961D8).
+   Only the index travels, never a pointer. Type, track and exact spawn xyz guard it. */
+#include "online_pickup.h"
+int hle_puppet_owner(int global);
+#define PICKUP_POOL 0x4348F0
+#define PICKUP_COUNT EE32(PICKUP_POOL + 0xC00)
+static uint8_t *pickup_entry(int id) { return EE_PTR(PICKUP_POOL + 0x18 + id * 20); }
+static uint8_t *pickup_node(uint8_t *p) { return *(uint8_t **)(p + 8); }
+
+int hle_online_pickup_allowed(void *rider)
+{
+    if (!online_mode() || !on.started) return 1;
+    for (int i = 0; i < hle_online_race_riders(); i++)
+        if (rider == RIDER(i)) return hle_puppet_owned(i);
+    return 0;
+}
+
+void hle_online_pickup_taken(void *pickup, void *rider)
+{
+    if (!online_mode() || !on.started || EE32(MENU) != LOAD_MENU || !race_running()) return;
+    for (int id = 0; id < PICKUP_COUNT && id < 150; id++) {
+        uint8_t *p = pickup_entry(id);
+        if (p != pickup) continue;
+        for (int slot = 0; slot < hle_online_race_riders(); slot++) {
+            if (rider != RIDER(slot) || !hle_puppet_owned(slot)) continue;
+            uint8_t e[PICKUP_EVENT_SIZE];
+            pickup_encode(e, id, hle_puppet_global(slot), *(int32_t *)(p + 4),
+                          EE32(SETUP + 0x2A0), pickup_node(p) + 0x10);
+            if (host_service_net_send_frame(NET_FRAME_EVENT, GADDR(e), sizeof e))
+                fprintf(stderr, "online: pickup %d taken by slot %d (sent)\n", id, hle_puppet_global(slot));
+        }
+        return;
+    }
+}
+
+static void receive_pickup(int sender, const uint8_t *e, int n)
+{
+    if (!on.started || EE32(MENU) != LOAD_MENU || !race_running() ||
+        n != PICKUP_EVENT_SIZE || e[2] >= PICKUP_COUNT || e[2] >= 150 ||
+        e[3] >= hle_online_race_riders() || hle_puppet_owner(e[3]) != sender) return;
+    uint8_t *p = pickup_entry(e[2]), *node = pickup_node(p);
+    if (!node || !pickup_matches(e, n, PICKUP_COUNT, *(int32_t *)(p + 4),
+                                 EE32(SETUP + 0x2A0), node + 0x10) ||
+        !*(int32_t *)node || !node[4]) return;
+    /* Same taken state as 00196590, without any rider reward. 00196888 waits
+       for this collector to leave a 10-unit radius, then runs the retail timer. */
+    *(void **)(p + 12) = RIDER(hle_puppet_local(e[3]));
+    *(int32_t *)(p + 16) = EE32(PICKUP_POOL + 0xBE8 + 4 * e[4]);
+    node[4] = 0;
+    fprintf(stderr, "online: pickup %d taken by slot %d (event from player %d)\n", e[2], e[3], sender);
+}
+
 /* DHD_NET_RECORD=file: tests, this PC's rider's snapshots as sent (a 2-byte length, then the
    payload), for nettool --replay's bots. Keep it under build/ or a temp folder. */
 static void record(const uint8_t *payload, int n)
@@ -619,15 +684,16 @@ static void receive_frames(void)
     while ((n = host_service_net_receive_frame(GADDR(frame), sizeof frame)) > 0) {
         int sender = frame[1];
         const uint8_t *e = frame + 2;
-        if (frame[0] == NET_FRAME_STATE) {  /* the sender's riders: [size][snapshot]... */
-            for (const uint8_t *end = frame + n; e < end && e + 1 + e[0] <= end; e += 1 + e[0]) {
-                hle_puppet_receive(sender, e + 1, e[0]);
-                on.received++;
-            }
+        if (frame[0] == NET_FRAME_STATE) {
+            hle_puppet_receive(sender, e, n - 2);
+            on.received++;
             continue;
         }
         if (frame[0] != NET_FRAME_EVENT || n < 4 || e[0] != EVENT_VERSION || sender >= NET_MAX_SLOTS) continue;
         switch (e[1]) {
+        case EVENT_PICKUP:
+            receive_pickup(sender, e, n - 2);
+            break;
         case EVENT_LOADED:
             if (!on.loaded[sender]++) fprintf(stderr, "online: player %d has loaded (at %.1f s)\n", sender, host_wall_seconds());
             break;
@@ -636,9 +702,13 @@ static void receive_frames(void)
                 Ride *r = &on.ride[sender];
                 r->rider = get32(e + 2);
                 for (int k = 0; k < 3; k++) r->outfit[k] = get32(e + 6 + 4 * k), r->bike[k] = get32(e + 18 + 4 * k);
+                r->colour = n - 2 >= 34 ? (int32_t)get32(e + 30) : -1;
+                /* a peer's word is not trusted: a colour outside the BIKE COLOR page's cursor range
+                   takes the frame's own (-1), so a bad value can't index the game's tables */
+                if (r->colour < -1 || r->colour > 15) r->colour = -1;
                 r->have = 1;
-                fprintf(stderr, "online: player %d rides %X (%d %d %d), bike %d %d %d\n", sender, r->rider,
-                        r->outfit[0], r->outfit[1], r->outfit[2], r->bike[0], r->bike[1], r->bike[2]);
+                fprintf(stderr, "online: player %d rides %X (%d %d %d), bike %d %d %d, colour %d\n", sender, r->rider,
+                        r->outfit[0], r->outfit[1], r->outfit[2], r->bike[0], r->bike[1], r->bike[2], r->colour);
             }
             break;
         case EVENT_START:
@@ -671,11 +741,15 @@ static void receive_frames(void)
 
 /* ---- the riders: who wears what ---- */
 
-/* A rider's bike online (issue #18): the room skips the shop, which would write it, so the setup
-   holds a stale one, and a pro rider on it rides a mix of two bikes. The five pros get theirs from
-   the game's own single-race rule (func_001B7C08, three words); the others the stock bike, 17 4 0,
-   as func_001B99B8 gives them. */
+/* A rider's bike online when the player's own choice isn't known (issue #18): a computer rider,
+   a player whose ride never came, a race started without the room's shop (scripted tests). A setup
+   the shop didn't write holds a stale bike, and a pro rider on it rides a mix of two bikes. The
+   five pros get theirs from the game's own single-race rule (func_001B7C08, three words); the
+   others the stock bike, 17 4 0, as func_001B99B8 gives them. Players choose their own in the
+   shop's pages since finding 128 (online_menu.c port_online_shop_commit). */
 extern void func_001B7C08(void *obj, int rider, int slot);
+static void default_bike(int rider, int32_t bike[3]);
+void hle_online_default_bike(int rider, int32_t bike[3]) { default_bike(rider, bike); }  /* online_menu.c */
 static void default_bike(int rider, int32_t bike[3])
 {
     if (rider == 0xE0 || rider == 0x100 || rider == 0x140 || rider == 0x180 || rider == 0x1A0) {
@@ -692,14 +766,16 @@ static void default_bike(int rider, int32_t bike[3])
    rides, and waits for theirs (at most 30 s). */
 static void exchange_rides(void)
 {
-    uint8_t e[30] = {EVENT_VERSION, EVENT_SETUP};
+    uint8_t e[34] = {EVENT_VERSION, EVENT_SETUP};  /* 34 since finding 128: the colour last */
     Ride *own = &on.ride[on.local_slot];
     double entered = host_wall_seconds();
     own->rider = EE32(SETUP + 0x290);
     for (int k = 0; k < 3; k++) own->outfit[k] = EE32(SETUP + 0x1B8 + 4 * k), own->bike[k] = EE32(SETUP + 0x11C + 4 * k);
+    own->colour = EE32(SETUP + 0x254);
     own->have = 1;
     put32(e + 2, own->rider);
     for (int k = 0; k < 3; k++) put32(e + 6 + 4 * k, own->outfit[k]), put32(e + 18 + 4 * k, own->bike[k]);
+    put32(e + 30, own->colour);
     send_event(e, sizeof e);
     for (;;) {
         NetLobby lobby;
@@ -750,13 +826,14 @@ void hle_online_riders(void *game)
     for (int i = 0; i < 16; i++) *(int32_t *)(g + 0x2A8 + 4 * i) = -1;
     *(int32_t *)(g + 0x2A8 + 4 * ((*(int32_t *)(g + 0x290) / 32 - 1) & 15)) = 0;
     for (int slot = 1; slot < NRIDERS && slot <= *(int32_t *)(g + 0x28C); slot++) {
-        int k = slot - 1, global = hle_puppet_global(slot), id, outfit[3] = {0, 0, 0}, bike[3];
+        int k = slot - 1, global = hle_puppet_global(slot), id, outfit[3] = {0, 0, 0}, bike[3], colour = -1;
         if (global < on.nslots) {
             const Ride *r = &on.ride[global];
             id = r->have ? r->rider : 0x20 * (on.pick[global] + 1);
             for (int w = 0; w < 3; w++) outfit[w] = r->have ? r->outfit[w] : 0;
             if (r->have) for (int w = 0; w < 3; w++) bike[w] = r->bike[w];
             else default_bike(id, bike);
+            if (r->have) colour = r->colour;
         } else {
             for (int tries = 0; tries < 10 && used[regular[next]]; tries++) next = (next + 1) % 10;
             id = 0x20 * (regular[next] + 1);
@@ -769,14 +846,17 @@ void hle_online_riders(void *game)
             *(int32_t *)(g + 0x1E8 + 12 * k + 4 * w) = outfit[w];
             *(int32_t *)(g + 0x14C + 12 * k + 4 * w) = bike[w];
         }
-        *(int32_t *)(g + 0x264 + 4 * k) = func_001FA7C0(bike[0]);
+        /* the bike colour (+0x254 per rider: the shop's BIKE COLOR); without one, the frame's own */
+        if (colour < 0) colour = func_001FA7C0(bike[0]);
+        *(int32_t *)(g + 0x264 + 4 * k) = colour;
         /* +0x2A8 is per rider: the slot riding it, -1 if none. The AI choice (func_001B74E8) and
            the rider screens only ask whether it is free, so a puppet on the human's rider leaves
            the human's entry */
         int32_t *kind = (int32_t *)(g + 0x2A8 + 4 * ((id / 32 - 1) & 15));
         if (*kind == -1) *kind = 4;
-        fprintf(stderr, "online: slot %d (%s %d) rides %s, bike %d %d %d\n", slot, global < on.nslots ? "player" : "AI",
-                global, rider_name[(id / 32 - 1) & 15], bike[0], bike[1], bike[2]);
+        fprintf(stderr, "online: slot %d (%s %d) rides %s, outfit %d %d %d, bike %d %d %d, colour %d%s\n", slot,
+                global < on.nslots ? "player" : "AI", global, rider_name[(id / 32 - 1) & 15], outfit[0], outfit[1], outfit[2],
+                bike[0], bike[1], bike[2], colour, global < on.nslots ? on.ride[global].have ? " (the player's choice)" : " (default)" : "");
     }
 }
 
@@ -864,13 +944,26 @@ void func_0020F9F0(int font, int view, int x, int y, const char *text);
    (func_001B4900: the race loop ends with 2 and the race screen opens its pause menu), whose
    builder then leaves the race screen at once as QUIT's Yes does (port_online_pause_rows). While
    the race loop runs, after a finish too, no menu opens: func_0015E0C0 alone or a pushed menu
-   does nothing there. Paused already, the menu opens again when the player resumes. */
+   does nothing there. Paused already, the loop's stop was taken by that pause (func_001B45F8 takes
+   one until the loop runs again), so the request is made again on the loop's first frame after
+   RESUME (hle_online_loop_frame): the menu opens again and leaves at once (finding 165). */
 static int quit_on_pause;
 static void leave_race(void)
 {
     quit_on_pause = 1;
     EE32(0x3F52D0 + 0x130) = 0;  /* the pad that paused (D_003F52D0.x130): this PC's */
     func_001B45F8(EE_PTR(0x4B1F40), 2, 0);
+}
+
+/* The touch controls' online panel, Leave race (touch_field.c, finding 141): out of this race as
+   BACK TO THE ROOM's Yes is (a race outside a room: as QUIT), without the question (the panel's
+   own second tap confirmed it). */
+void port_online_touch_leave(void)
+{
+    if (!online_mode() || !on.started || on.end_done) return;
+    fprintf(stderr, "online: touch panel: leave the race\n");
+    on.end_done = 1, on.end_done_at = host_wall_seconds();
+    leave_race();
 }
 
 /* A race started outside a room (DHD_NET_CREATE / DHD_NET_JOIN, the tests' races): the host
@@ -1097,13 +1190,36 @@ static void finish_step(void)
 extern void func_00148560(void *, int);
 extern void func_00148860(void *);
 
-void hle_online_watch_resume(void) { on.watch_paused = on.watch_direction = 0; }
+/* Every frame of the race loop (func_0016C0C8): the pause menu, which runs outside it, is closed.
+   watch_direction keeps the pad's last Left / Right (pads_read_now reads it in the menu too), so a
+   direction held through RESUME is no new press. A leave_race that came while the menu was up asks
+   the loop to stop again (ignored while a stop is pending). */
+void hle_online_loop_frame(void)
+{
+    on.watch_paused = 0;
+    if (quit_on_pause) func_001B45F8(EE_PTR(0x4B1F40), 2, 0);
+}
+
+/* View 0's camera setting (distance, D_004225A0 +0x12220, and its blend +0x12230, for the next
+   race too): func_0014CC38 changes it from the view's rider's own camera buttons, so watching a
+   player who changes theirs changed this PC's (func_0014DAA8 stores it). Saved when the camera
+   first leaves this PC's rider, put back when the race ends for this PC. */
+#define VIEW0_ZOOM (0x4225A0 + 0x12220)
+#define VIEW0_ZOOM_RATE (0x4225A0 + 0x12230)
+
+static void watch_zoom_restore(void)
+{
+    if (!on.watched) return;
+    EE32(VIEW0_ZOOM) = on.saved_zoom;
+    EE32(VIEW0_ZOOM_RATE) = on.saved_zoom_rate;
+}
 
 static void watch_cut(int slot)
 {
     if (slot == on.watch_slot) return;
     on.watch_slot = slot;
     on.watch_finished_at = 0;
+    if (slot && !on.watched) on.saved_zoom = EE32(VIEW0_ZOOM), on.saved_zoom_rate = EE32(VIEW0_ZOOM_RATE);
     if (slot) on.watched = 1;
     char name[48];
     fprintf(stderr, "online: watching %s (slot %d)\n",
@@ -1123,7 +1239,20 @@ void hle_online_watch_camera(void *camera)
     if (camera != EE_PTR(0x37EA60) || slot < 0 || slot >= hle_online_race_riders()) return;
     if (!slot && !(from_menu && on.end_held)) return;
     if (on.watch_paused || EE32(0x398C40 + 0x5BE4)) return; /* the race loop's pause state */
-    int cut = *(uint8_t **)((char *)camera + 0x2B4) != RIDER(slot);
+    uint8_t *old = *(uint8_t **)((char *)camera + 0x2B4);
+    int cut = old != RIDER(slot);
+    /* The game's own rider switch (func_001487D8) never leaves a rider while it crashes (crash
+       flag +0x4098 bit 2, or the crash states +0x6320 / +0x62E0): the crash's camera and screen
+       effects end only with it. Leaving one then (a crash with Quick Mount held) left the
+       screen orange. The cut waits for the crash to end, at most CUT_WAIT seconds. */
+    enum { CUT_WAIT = 5 };
+    if (cut && old && ((old[0x4098] >> 2 & 1) || *(uint8_t **)(old + 0x4ECC) == old + 0x6320
+                       || *(uint8_t **)(old + 0x4ECC) == old + 0x62E0)) {
+        double now = host_wall_seconds();
+        if (!on.cut_wait_at) on.cut_wait_at = now;
+        if (now - on.cut_wait_at < CUT_WAIT) return;
+    }
+    on.cut_wait_at = 0;
     *(uint8_t **)((char *)camera + 0x2B4) = RIDER(slot);
     if (cut) fprintf(stderr, "online: camera cut slot %d, mode %d -> 1\n", slot, EE32(0x37EA60 + 0x2B8));
     if (cut || EE32(0x37EA60 + 0x2B8) != 1) {
@@ -1195,7 +1324,6 @@ static void check_left(void)
 {
     NetLobby lobby;
     host_service_net_get_lobby(GADDR(&lobby));
-    on.away = lobby.racers_away;
     for (int j = 0; j < on.nslots; j++) {
         int gone = j != on.local_slot && (lobby.racer[j].left || lobby.offline);
         if (!gone || on.gone[j]) continue;
@@ -1213,6 +1341,37 @@ static void check_left(void)
     }
 }
 
+/* This tick's snapshots of the riders this PC runs (ai: the AI riders' too), bundled
+   (state_bundle.h, finding 169): as few messages as fit one datagram each, stamped with their
+   moment on the server's clock. */
+static void send_snapshots(int ai)
+{
+    static uint8_t rec[NRIDERS][STATE_RECORD_MAX], bundle[STATE_BUNDLE_RIDERS][STATE_BUNDLE_MAX];
+    const uint8_t *recs[NRIDERS];
+    int size[NRIDERS], slots[NRIDERS], count = 0, bundle_size[STATE_BUNDLE_RIDERS];
+    for (int slot = 0; slot < (ai ? hle_online_race_riders() : 1) && count < NRIDERS; slot++) {
+        int n = hle_puppet_pack(slot, rec[count], STATE_RECORD_MAX);
+        if (n <= 0) continue;
+        recs[count] = rec[count], size[count] = n, slots[count++] = slot;
+    }
+    if (!count) return;
+    /* The moment the snapshots show, on the server clock: our GO there plus the race time. Not
+       the clock at packing: the race clock may trail the wall clock by a few ms (pacing), and the
+       pose is the race clock's (finding 169). */
+    double stamp = on.go_server ? on.go_server + port_field_seconds(RACE_CLOCK) * 1000 : host_service_net_server_ms();
+    if (slots[0] == 0) {  /* DHD_NET_RECORD: this PC's rider alone, as a bundle of one */
+        int one_size;
+        if (state_bundle_pack(recs, size, 1, stamp, bundle, &one_size)) record(bundle[0], one_size);
+    }
+    int bundles = state_bundle_pack(recs, size, count, stamp, bundle, bundle_size), sent = 0;
+    for (int b = 0; b < bundles; b++)
+        sent += host_service_net_send_frame(NET_FRAME_STATE, GADDR(bundle[b]), bundle_size[b]) != 0;
+    if (!sent) return;
+    on.bundles_sent += sent;
+    on.sent += count;
+    for (int i = 0; i < count; i++) on.ai_sent += slots[i] != 0;
+}
+
 /* Each vsync of the race: the snapshots and events in, ours out. */
 static void state_sync(void)
 {
@@ -1223,6 +1382,7 @@ static void state_sync(void)
     if (race_running() && !on.go_sent) {  /* GO: when it was, on the server's clock */
         uint8_t e[10] = {EVENT_VERSION, EVENT_GO};
         on.go_server = host_service_net_server_ms() - port_field_seconds(clock) * 1000;
+        hle_puppet_go(on.go_server);  /* snapshots' server stamps onto this race clock */
         memcpy(e + 2, &on.go_server, 8);
         send_event(e, sizeof e);
         on.go_sent = 1;
@@ -1264,24 +1424,11 @@ static void state_sync(void)
             set_env("DHD_NAV", script);
         }
     }
-    if (!race_running() || clock < on.last_sent + SNAPSHOT_TICKS && clock >= on.last_sent) return;
-    on.last_sent = clock - clock % SNAPSHOT_TICKS;
-    /* All our riders in one frame (the host's AI riders too): one message to the server a
-       snapshot, not one a rider. Each is [size][snapshot]; a snapshot stays within 255 bytes. */
-    int at = 0, riders = 0, ai = 0;
-    for (int slot = 0; slot < hle_online_race_riders(); slot++) {
-        int room = (int)sizeof payload - at - 1;
-        if ((n = hle_puppet_pack(slot, payload + at + 1, room < 255 ? room : 255)) > 0) {
-            payload[at] = (uint8_t)n;
-            if (slot == 0) record(payload + at + 1, n);
-            at += 1 + n, riders++;
-            if (slot && hle_puppet_owned(slot)) ai++;
-        }
-    }
-    if (at && host_service_net_send_frame(NET_FRAME_STATE, GADDR(payload), at)) {
-        on.sent += riders;
-        on.ai_sent += ai;
-    }
+    if (!race_running() || clock == on.last_sent) return;
+    int ai = clock >= on.last_ai_sent + AI_SNAPSHOT_TICKS || clock < on.last_ai_sent;
+    on.last_sent = clock;
+    if (ai) on.last_ai_sent = clock - clock % AI_SNAPSHOT_TICKS;
+    send_snapshots(ai);
     while ((n = hle_puppet_take_event(payload, sizeof payload)) > 0) send_event(payload, n);
     static double last_title;
     if (host_wall_seconds() - last_title > 1) {
@@ -1294,10 +1441,10 @@ static void state_sync(void)
             title("Downhill Revived online - room %s - player %d of %d - ping %d ms%s%s", on.code, on.local_slot + 1,
                   on.nslots, lobby.ping_ms, lobby.offline ? " - offline" : "",
                   on.end_held ? " - finished, waiting for the others" : "");
-        extern unsigned kernel_pace_extra_fields, kernel_pace_late_ms;
-        fprintf(stderr, "online: race clock %d (%d fps), %u snapshots sent, %u received, hits taken %d, %u ms late, %u "
-                "extra fields, lag (ms):%s\n", clock, port_fps(), on.sent, on.received, hle_puppet_hits_taken(),
-                kernel_pace_late_ms, kernel_pace_extra_fields, lag);
+        extern unsigned kernel_pace_late_ms;
+        fprintf(stderr, "online: race clock %d (%d fps), %u snapshots sent in %u messages, %u messages received, "
+                "hits taken %d, %u ms late, puppets shown behind/snapshot age (ms):%s\n", clock, port_fps(), on.sent,
+                on.bundles_sent, on.received, hle_puppet_hits_taken(), kernel_pace_late_ms, lag);
         if (on.end_held) fprintf(stderr, "online: watching: %u owned AI snapshots sent, phase %d\n", on.ai_sent, EE32(PHASE));
         static double last_ping;
         if (last_title - last_ping >= 10) last_ping = last_title, log_pings(&lobby);
@@ -1343,6 +1490,10 @@ extern float port_fov_x;  /* widescreen.c: glyph width scale, 1 when off */
 void hle_online_names(void *rider, int view)
 {
     if (!online_mode() || !on.started || rider != RIDER(0) || !race_running()) return;
+    static HleEnv names_env;
+    const char *names = hle_env(&names_env, "DHD_NAMES");
+    if (names && !dhd_stricmp(names, "off")) return;
+    int name_width = names && !dhd_stricmp(names, "large") ? 400 : names && !dhd_stricmp(names, "medium") ? 320 : 240;
     uint8_t *pen = EE_PTR(0x4F3570), kept[0x20];
     int cx, cy, w, h, drawn = 0;
     func_0023D618(view, &cx, &cy);
@@ -1373,13 +1524,12 @@ void hle_online_names(void *rider, int view)
         /* nearer than NAME_NEAR as it was; beyond, smaller and fainter */
         float far = base[2] <= NAME_NEAR ? 0 : (base[2] - NAME_NEAR) / (float)(NAME_FAR - NAME_NEAR);
         int size = 100 - (int)((100 - NAME_SMALLEST) * far), alpha = (int)(128 * (1 - far));
-        int away = global < 32 && on.away >> global & 1;
-        if (away) alpha /= 2;
         if (alpha < 8) continue;
         char label[48];
         int talking = host_service_voice_state(VOICE_STATE_TALKING, global);  /* voice chat (finding 131) */
-        snprintf(label, sizeof label, away ? "%s - AWAY" : talking ? "%s - TALKING" : "%s", on.name[global]);
-        func_0020FB80(0, 320 * size / 100, 240 * size / 100, -102 * size / 100, -24 * size / 100);
+        snprintf(label, sizeof label, talking ? "%s - TALKING" : "%s", on.name[global]);
+        int width = name_width * size / 100;
+        func_0020FB80(0, width, width * 3 / 4, -width * 102 / 320, -width * 24 / 320);
         int half_width = (func_0020F860(0, label) + 31) / 32;
         if (local_x - half_width * port_fov_x < 1 || local_x + half_width * port_fov_x >= w - 1 || y < 1) continue;
         const uint8_t *c = name_colour[global % NET_MAX_SLOTS];
@@ -1388,8 +1538,7 @@ void hle_online_names(void *rider, int view)
         func_0020F9F0(0, view, x + 1, y, label);
         func_0020F9F0(0, view, x, y - 1, label);
         func_0020F9F0(0, view, x, y + 1, label);
-        if (away) func_0020F518(0, 96, 96, 96, alpha);
-        else func_0020F518(0, c[0], c[1], c[2], alpha);
+        func_0020F518(0, c[0], c[1], c[2], alpha);
         func_0020F9F0(0, view, x, y, label);
         drawn = 1;
     }
@@ -1827,6 +1976,7 @@ static void race_over(void)
     kernel_pace_shared(0);
     set_env("DHD_NAV", saved_nav);  /* "" unsets it */
     set_env("DHD_RACE_SEED", saved_seed);
+    watch_zoom_restore();
     memset(&on, 0, sizeof on);
     race_chat_close();
     memset(&race_chat, 0, sizeof race_chat);
@@ -1851,6 +2001,7 @@ static void back_to_room(void)
     kernel_pace_shared(0);
     set_env("DHD_NAV", saved_nav);
     set_env("DHD_RACE_SEED", saved_seed);
+    watch_zoom_restore();
     memset(&on, 0, sizeof on);
     online = 0, from_menu = 0, connected = 0;
     selected_ride = 0;
@@ -1980,11 +2131,15 @@ void pads_begin_field(void)
             /* the outfit's first word is the rider (as write_setup and hle_online_riders have it): the
                selection can leave the rider screen's first rider there, who would then ride */
             EE32(SETUP + 0x1B8) = selected_rider / 32 - 1;
-        }
-        {
+            EE32(SETUP + 0x254) = selected_colour;
+            fprintf(stderr, "online: this PC rides %X, outfit %d %d %d, bike %d %d %d, colour %d (the shop's choice)\n",
+                    selected_rider, EE32(SETUP + 0x1B8), selected_outfit[1], selected_outfit[2], selected_bike[0],
+                    selected_bike[1], selected_bike[2], selected_colour);
+        } else {
             int32_t bike[3];
             default_bike(EE32(SETUP + 0x290), bike);
             for (int k = 0; k < 3; k++) EE32(SETUP + 0x11C + 4 * k) = bike[k];
+            EE32(SETUP + 0x254) = func_001FA7C0(bike[0]);  /* the frame's own colour, as the puppets get */
         }
         exchange_rides();
         on.setup_done = 1;
@@ -2006,9 +2161,27 @@ void pads_begin_field(void)
     if (on.started && EE32(MENU) != LOAD_MENU) race_left();
 }
 
+int port_controls_capturing(void);  /* controls_settings.c: a binding waits for a key or button */
+
+/* While PC SETTINGS > Controls waits for a key or button (and until it is let go), the game sees
+   no input: the press is the page's (finding 157). The pads stay connected. */
+static void held_back(HostPad *out)
+{
+    uint8_t connected = out->connected;
+    neutral(out);
+    out->connected = connected;
+}
+
 /* Online: the menu script, then in the race this PC's controller (DHD_NET_SCRIPTED=1, tests:
    still the script, DHD_RACE_PAD). */
+static void pads_read_now(int player, HostPad *out);
 void pads_read(int player, HostPad *out)
+{
+    pads_read_now(player, out);
+    if (port_controls_capturing()) held_back(out);
+}
+
+static void pads_read_now(int player, HostPad *out)
 {
     static HleEnv scripted_env;
     if (online_mode()) {

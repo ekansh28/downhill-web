@@ -283,7 +283,8 @@ int snd_bank_parse(SndBank *bank, const uint8_t *data, uint32_t size)
         uint32_t go = rd32(p + 8);
         int k;
         sound->index = i; sound->volume = (int8_t)p[0]; sound->group = p[1];
-        sound->pan = (int16_t)rd16(p + 2); sound->ngrains = p[4]; sound->flags = rd16(p + 6);
+        sound->pan = (int16_t)rd16(p + 2); sound->ngrains = p[4];
+        sound->instance_limit = (int8_t)p[5]; sound->flags = rd16(p + 6);
         if (!sound->ngrains) continue; /* retail empty sounds carry a -40 offset */
         if (go > meta_size - first_grain ||
             !region(first_grain + go, (uint32_t)sound->ngrains * 40, meta_size)) return 0;
@@ -662,6 +663,29 @@ static void stream_mix_parameters(Stream *s)
     }
 }
 
+/* DHD_SND_VOICE_TRACE: every 800 samples, each sounding voice as the SPU2 would hold it (the
+   columns of the PCSX2 reference's voice dump, finding 133): its sound, its tone's offset in the
+   bank's wave chunk, Q12 pitch, envelope, current left/right volume (Q15, sign kept) and routing.
+   Read-only: it changes no PCM. */
+static void snd_debug_voices(void)
+{
+    int i;
+    if (!snd_voice_trace || grain_samples % 800) return;
+    for (i = 0; i < SND_VOICES; i++) {
+        const Voice *v = &voices[i];
+        const SoundHandler *h = v->owner ? handler_find(v->owner) : NULL;
+        if (!v->used || v->paused || v->env.phase == 4 || !v->env.level) continue;
+        fprintf(snd_voice_trace, "%llu,%d,%d,%.16s,%d,%ld,%u,%d,%d,0x%04X,0x%04X,%d,%d,%d,%d,0x%X\n",
+                (unsigned long long)grain_samples, i, v->core, h ? h->sound->name : "",
+                h ? h->sound->group : -1,
+                h ? (long)(v->adpcm - h->bank->bank.data) - (long)h->bank->bank.wave_off : -1L,
+                v->owner ? v->step >> 4 : v->step * SND_RATE / 22050 >> 4, v->env.level, v->env.phase,
+                v->env.adsr1, v->env.adsr2, v->vol_l, v->vol_r, !(v->tone.flags & 16),
+                (v->tone.flags & (1 | 16)) != 0, v->tone.flags);
+    }
+    if (grain_samples % 48000 == 0) fflush(snd_voice_trace);
+}
+
 /* Advances every voice and stream by one output sample into mix[2]. */
 static void mix_sample(int32_t mix[2])
 {
@@ -669,6 +693,7 @@ static void mix_sample(int32_t mix[2])
     int nvoices = 0, nstreams = 0, voice_gain = 0;
     int32_t components[3][2] = {{0,0},{0,0},{0,0}};
     int32_t wet[2][2] = {{0,0},{0,0}};
+    snd_debug_voices();
     if (grain_samples && grain_samples % 200 == 0) {
         handlers_tick(); stream_parameters_tick();
         if (grain_samples % 800 == 0) duckers_tick();

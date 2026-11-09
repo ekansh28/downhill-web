@@ -1,11 +1,11 @@
-"""PC build, wasm32 stage: the portable game core as one wasm module (finding 075, phase 3).
+"""PC build, wasm32 stage: the portable game core as one wasm module (finding 081, phase 3).
 
 Writes build/wasm/dhd_core.wasm from
   - every game unit (src/**), transformed (port/tools/transform.py, port/patches.py) with an empty
     label prefix (wasm C symbols carry none, so the asm labels must not either);
   - the recompiled asm-only functions (port/tools/recomp.py), found by a fixed point over the
     objects' undefined names;
-  - the module-side port files (finding 075, phase 2): runtime and hle, compiled from a mirror of
+  - the module-side port files (finding 081, phase 2): runtime and hle, compiled from a mirror of
     port/ in which the data declarations are numbers (below) and RETAIL labels have no prefix;
   - the game data's fixups (data.py), as a table of {PS2 address, value} pairs; code addresses
     are table indices, data addresses numbers.
@@ -13,7 +13,7 @@ Writes build/wasm/dhd_core.wasm from
 Data symbols are numbers, not linker symbols: wasm-ld has no --defsym, the wasm assembler rejects
 absolute symbols, and an alias needs an anchor as big as the guest space. So each C declaration of
 a data name (D_xxxxxxxx, _gp) becomes a macro for its PS2 address (data.absolute). Design and the
-checks behind it: build/audit/w5-wasm-module.md.
+checks behind it: finding 082 ("W5").
 
 The module's imports are the host_api.h functions only (--allow-undefined-file). Anything else that
 doesn't resolve fails the strict link; a diagnostic link with --allow-undefined then writes the
@@ -27,7 +27,7 @@ usage: python port/tools/build_wasm.py [-j 8]
 Needs LLVM's clang, wasm-ld, llvm-nm, llvm-objcopy, llvm-cxxfilt on PATH (clang also assembles the
 data image as a COFF object, for its checks only), WABT's wasm-objdump, the wasi-sdk sysroot
 (WASI_SYSROOT) and SIMDe (SIMDE_DIR). The native hosts run wasm2c themselves (build_host64.py)."""
-import argparse, collections, glob, hashlib, json, os, re, shutil, subprocess, sys, time
+import argparse, collections, glob, hashlib, json, os, re, shutil, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -60,23 +60,23 @@ SIMDE = os.environ.get('SIMDE_DIR', str(DEVCACHES / 'simde-src'))
 WABT = os.environ.get('WABT_DIR', str(DEVCACHES / 'wabt/wabt-1.0.42'))
 WASM = os.path.join(OUT, 'dhd_core.wasm')
 
-# The module's own memory: above the scratchpad (0x70000000), see build/audit/w5-wasm-module.md 3.
+# The module's own memory: above the scratchpad (0x70000000), see finding 082 ("W5").
 STACK_BASE = 0x70100000
 STACK_SIZE = 1 << 20
 DATA_BASE = STACK_BASE + STACK_SIZE
 INITIAL_MEMORY = 0x70E00000   # covers data+bss (0x705B1220 in run 24) and the scratchpad below it
 MAX_MEMORY = 0x80000000
 
-# finding 075, phase 2: the module side (port/runtime, port/hle)
+# finding 081, phase 2: the module side (port/runtime, port/hle)
 MODULE_UNITS = [
     'runtime/ps2asm.c', 'runtime/vu0_micro.c', 'runtime/vu0_interp.c', 'runtime/recomp.c',
     'runtime/libc_shims.c', 'runtime/memory.c',
     'runtime/sha256.c', 'hle/kernel.c', 'hle/timer.c', 'hle/boot.c', 'hle/sif.c', 'hle/cdvd.c', 'hle/game_data.c',
     'hle/iop.c', 'hle/mc.c', 'hle/dma.c', 'hle/graphics.c', 'hle/pad.c', 'hle/menu_page.c',
-    'hle/pc_settings.c', 'hle/controls.c', 'hle/controls_menu.c', 'hle/widescreen.c', 'hle/exit_menu.c',
-    'hle/puppet.c', 'hle/online.c',
+    'hle/pc_settings.c', 'hle/widescreen.c', 'hle/exit_menu.c', 'hle/puppet.c', 'hle/online.c',
     'hle/online_menu.c', 'hle/autopad.c', 'hle/state_trace.c', 'hle/rate_audit.c', 'hle/sound.c', 'hle/game_options.c',
-    'hle/fps.c', 'hle/keyboard.c', 'hle/trackbar.c', 'hle/vif0.c', 'hle/presence.c', 'runtime/wasi_adapter.c',
+    'hle/fps.c', 'hle/replay.c', 'hle/keyboard.c', 'hle/trackbar.c', 'hle/vif0.c', 'hle/presence.c', 'hle/touch_field.c',
+    'hle/touch_settings.c', 'hle/controls_settings.c', 'runtime/wasi_adapter.c',
 ]
 MIRROR_DIRS = ['runtime', 'hle', 'include', 'host', 'gs', 'net']
 
@@ -879,7 +879,32 @@ def wasm_link_once(objs, out, allow_all, host_syms):
 
 
 def wasm_objdump(path, *flags):
-    return run([os.path.join(WABT, 'bin', 'wasm-objdump')] + list(flags) + [path]).stdout
+    """wasm-objdump's output. A run that hasn't ended after OBJDUMP_TIMEOUT seconds is killed and
+    tried again: on Windows it can hang at start with no CPU used (a file scanner holding the new
+    object), which stalled whole builds for most of an hour."""
+    cmd = [os.path.join(WABT, 'bin', 'wasm-objdump')] + list(flags) + [path]
+    for attempt in range(OBJDUMP_TRIES):
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding='utf-8', errors='replace')
+        try:
+            out, err = p.communicate(timeout=OBJDUMP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            try:
+                p.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass  # a process that can't even be killed is left behind; the retry doesn't wait for it
+            print('wasm-objdump: no answer in %d s on %s, try %d of %d'
+                  % (OBJDUMP_TIMEOUT, os.path.basename(path), attempt + 1, OBJDUMP_TRIES), flush=True)
+            continue
+        if p.returncode == 0:
+            return out
+        print('wasm-objdump: exit %d on %s, try %d of %d: %s'
+              % (p.returncode, os.path.basename(path), attempt + 1, OBJDUMP_TRIES, err.strip()[:200]), flush=True)
+    sys.exit('wasm-objdump failed %d times on %s' % (OBJDUMP_TRIES, path))
+
+
+OBJDUMP_TIMEOUT, OBJDUMP_TRIES = 120, 3
 
 
 def show_failures(records, what, names=None):
@@ -916,8 +941,71 @@ JOBS = {}      # object path -> (compile function, its base job): how to rebuild
 REFUSED = {}   # recompiled names the scalar guard refused (recompile_objects fills it)
 
 
+class ObjectSignatures:
+    """object_signatures' answers by the object's SHA-256, kept across builds and checkouts in
+    CORE_CACHE/object-signatures.json (finding 151): an object of the same bytes has the same
+    signatures, and a build reads those of about 4,500 objects (one wasm-objdump each: 5,000
+    processes, a third of a rebuild's time when every object came from the object cache)."""
+    def __init__(self):
+        self.path = CORE_CACHE / 'object-signatures.json'
+        self.lock = threading.Lock()
+        try:
+            self.known = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            self.known = {}
+        self.new = {}
+        # the answers also depend on the parser and on wasm-objdump: both are in every key, so a
+        # branch that changes either one gets its own entries
+        import inspect
+        tool = hashlib.sha256(inspect.getsource(object_signatures_uncached).encode() +
+                              repr([(r.pattern, r.flags) for r in (SECTION, TYPE_LINE, FUNC_LINE)]).encode())
+        tool.update(subprocess.run([os.path.join(WABT, 'bin', 'wasm-objdump'), '--version'],
+                                   capture_output=True).stdout)
+        self.tool = tool.digest()
+
+    def get(self, path):
+        key = hashlib.sha256(self.tool + open(path, 'rb').read()).hexdigest()
+        found = self.known.get(key) or self.new.get(key)
+        if found is None:
+            defs, imps = object_signatures_uncached(path)
+            with self.lock:
+                self.new[key] = [{n: [list(p), r] for n, (p, r) in d.items()} for d in (defs, imps)]
+            return defs, imps
+        return tuple({n: (tuple(p), r) for n, (p, r) in d.items()} for d in found)
+
+    def save(self):
+        if not self.new:
+            return
+        try:
+            try:
+                known = json.loads(self.path.read_text())
+            except (OSError, ValueError):
+                known = {}
+            if len(known) > 100000:  # objects of sources long gone: start again
+                known = {}
+            known.update(self.new)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name('object-signatures.json.%d.tmp' % os.getpid())
+            tmp.write_text(json.dumps(known))
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+
+SIGNATURES = []  # the build's ObjectSignatures, made on first use
+SIGNATURES_LOCK = threading.Lock()
+
+
 def object_signatures(path):
-    """({defined name: sig}, {imported name: sig}) of a wasm object; sig = (param types, result or None)."""
+    """({defined name: sig}, {imported name: sig}) of a wasm object; sig = (param types, result or
+    None). Remembered by the object's bytes (ObjectSignatures)."""
+    with SIGNATURES_LOCK:
+        if not SIGNATURES:
+            SIGNATURES.append(ObjectSignatures())
+    return SIGNATURES[0].get(path)
+
+
+def object_signatures_uncached(path):
     types, defs, imps, section = {}, {}, {}, None
     for line in wasm_objdump(path, '-x').splitlines():
         m = SECTION.match(line)
@@ -1162,8 +1250,166 @@ def abi_stage_core(objs, rc_objs, failed_units, max_workers=8):
                                 where, '%s__as_%s' % (name, sig_tag(csig)),
                                 handling(csig, dsig), reads]))
     write(os.path.join(OUT, 'abi_thunks.tsv'), '\n'.join(table) + '\n')
+    if SIGNATURES:
+        SIGNATURES[0].save()
     return {'objs': [stub_o, thunk_o], 'stubs': sorted(stubs), 'thunks': len(thunks), 'rows': len(rows),
             'left': len(left), 'table': table}
+
+
+# ---- the core cache: a finished module reused when none of its inputs changed -----------------
+# Every checkout (worktrees too) builds the same module from the same inputs again and again (a
+# reference build, a change to docs or to the Rust renderer); the object cache saves the compiles
+# but not the rest (about 10 minutes). DHD_MODULE_CACHE=0 turns it off.
+CORE_CACHE = DEVCACHES / 'dhd-modulecache'
+CORE_CACHE_KEEP = 12
+# what a hit puts back in build/wasm: the module and the files later steps and tools read
+CORE_CACHE_FILES = ['dhd_core.wasm', 'dhd.map', 'census.json', 'link.txt', 'postlink.json', 'offset_scan.json',
+                    'host_api.syms', 'abi_thunks.tsv', 'recompiled.txt', 'recompiled-with-c.txt',
+                    'ps2asm_aot.inc', 'vu0_aot.inc', 'vu0_native_words.inc']
+CORE_CACHE_DIRS = ['vu1aot']
+# tracked files that can't change the module (everything else in the checkout counts)
+NOT_CORE = ('docs/', 'online/', '.github/', 'port/launcher/', 'port/render/', 'port/web/', 'port/android/',
+            'port/release/')
+# where a new, not yet added file can change the module (the sources, the mirrored port folders, the tools)
+CORE_NEW_FILES = ('src/', 'include/', 'port/runtime/', 'port/hle/', 'port/include/', 'port/host/', 'port/gs/',
+                  'port/net/', 'port/tools/', 'port/patches')
+# the environment the build reads (the tools' folders are in the key by their resolved paths)
+CORE_ENV = ('DHD_VUTEXT', 'WASI_SYSROOT', 'SIMDE_DIR', 'WABT_DIR')
+
+
+def core_inputs_key():
+    """A hash of everything the module is built from: the checkout's files (tracked, and new ones
+    git doesn't ignore yet, with their working-tree content) except NOT_CORE and Markdown, the
+    generated asm/ and assets/, the tools' versions and the environment that points at inputs. New
+    files count only in the folders the module is built from (CORE_NEW_FILES), so a checkout's own
+    scratch files don't change the key; nor do the run-time DHD_ variables (only CORE_ENV)."""
+    h = hashlib.sha256(b'dhd-module-cache 3\n')
+    def git_files(*args):
+        out = subprocess.run(['git', 'ls-files', '-z'] + list(args), cwd=ROOT, capture_output=True).stdout
+        return [n for n in out.decode('utf-8', 'replace').split('\0') if n]
+    names = {n for n in git_files('--cached') if not n.startswith(NOT_CORE) and not n.endswith('.md')}
+    names |= {n for n in git_files('--others', '--exclude-standard') if n.startswith(CORE_NEW_FILES)}
+    for d in ('asm', 'assets'):
+        for p in glob.glob(os.path.join(ROOT, d, '**', '*'), recursive=True):
+            if os.path.isfile(p):
+                names.add(os.path.relpath(p, ROOT).replace(os.sep, '/'))
+    memo = FileHashes()
+    for n in sorted(names):
+        p = os.path.join(ROOT, n)
+        if os.path.isfile(p):
+            # line endings as git stores them: checkouts differ (core.autocrlf), the module doesn't
+            h.update(n.encode() + b'\0' + memo.sha256(p, lf=True))
+    for k in CORE_ENV:
+        h.update(('%s=%s\n' % (k, os.environ.get(k, ''))).encode())
+    # the inputs outside the checkout by their content, not only their place: an external
+    # DHD_VUTEXT (vu1_aot.py reads it), SIMDe's headers, the WASI sysroot's headers and libraries
+    vutext = os.environ.get('DHD_VUTEXT')
+    if vutext and os.path.isfile(vutext):
+        h.update(b'vutext\0' + memo.sha256(vutext))
+    for base, patterns in ((SIMDE, ('**/*.h',)), (WASI, ('include/**/*.h', 'lib/**/*.a'))):
+        for pattern in patterns:
+            for p in sorted(glob.glob(os.path.join(base, pattern), recursive=True)):
+                h.update(os.path.relpath(p, base).encode() + b'\0' + memo.sha256(p))
+    h.update(('%s|%s|%s\n' % (WASI, SIMDE, WABT)).encode())
+    h.update(run(['clang', '--version']).stdout.encode())
+    memo.save()
+    return h.hexdigest()
+
+
+class FileHashes:
+    """Files' SHA-256 remembered across builds by path, size, modification time and file id
+    (CORE_CACHE/file-hashes.json): the key re-reads only files changed since (finding 151: the
+    WASI sysroot and SIMDe alone are 272 MB, 5 s of every build, hits included). lf: the hash of
+    the text with CRLF as LF."""
+    def __init__(self):
+        self.path = CORE_CACHE / 'file-hashes.json'
+        try:
+            self.known = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            self.known = {}
+        self.changed = False
+
+    def sha256(self, path, lf=False):
+        if lf:  # the checkout's own files are always read: an edit can keep size and mtime (and on
+            # Windows st_ctime is the creation time), and they are a small part of the bytes
+            return hashlib.sha256(open(path, 'rb').read().replace(b'\r\n', b'\n')).digest()
+        st = os.stat(path)
+        name = os.path.normcase(os.path.abspath(path))
+        # ctime too (POSIX: the change time): a copy that puts the old mtime back still changes it.
+        # These are the toolchain trees (WASI sysroot, SIMDe), replaced whole by an update.
+        stamp = [st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns]
+        entry = self.known.get(name)
+        if entry and entry[:4] == stamp:
+            return bytes.fromhex(entry[4])
+        data = open(path, 'rb').read()
+        digest = hashlib.sha256(data.replace(b'\r\n', b'\n') if lf else data).digest()
+        self.known[name] = stamp + [digest.hex()]
+        self.changed = True
+        return digest
+
+    def save(self):
+        if not self.changed:
+            return
+        try:  # merged with what other checkouts stored meanwhile; a lost race only costs a re-read
+            try:
+                known = json.loads(self.path.read_text())
+            except (OSError, ValueError):
+                known = {}
+            known.update(self.known)
+            if len(known) > 100000:  # files of removed checkouts
+                known = {k: v for k, v in known.items() if os.path.exists(k.removeprefix('lf:'))}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name('file-hashes.json.%d.tmp' % os.getpid())
+            tmp.write_text(json.dumps(known))
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+
+def core_cache_get(key):
+    entry = CORE_CACHE / key
+    if os.environ.get('DHD_MODULE_CACHE') == '0' or not (entry / 'dhd_core.wasm').is_file():
+        return False
+    os.makedirs(OUT, exist_ok=True)
+    for f in CORE_CACHE_FILES:
+        if (entry / f).is_file():
+            shutil.copy2(entry / f, os.path.join(OUT, f))
+    for d in CORE_CACHE_DIRS:
+        if (entry / d).is_dir():
+            shutil.rmtree(os.path.join(OUT, d), ignore_errors=True)
+            shutil.copytree(entry / d, os.path.join(OUT, d))
+    os.utime(entry)
+    image = open(WASM, 'rb').read()
+    print('core cache: hit %s, %s (%d bytes, sha256 %s); the intermediate files in build/wasm are not '
+          'refreshed (DHD_MODULE_CACHE=0 for a full build)' % (key[:16], WASM, len(image), hashlib.sha256(image).hexdigest()),
+          flush=True)
+    return True
+
+
+def core_cache_put(key):
+    if os.environ.get('DHD_MODULE_CACHE') == '0':
+        return
+    try:
+        tmp = CORE_CACHE / (key + '.tmp%d' % os.getpid())
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        for f in CORE_CACHE_FILES:
+            if os.path.isfile(os.path.join(OUT, f)):
+                shutil.copy2(os.path.join(OUT, f), tmp / f)
+        for d in CORE_CACHE_DIRS:
+            if os.path.isdir(os.path.join(OUT, d)):
+                shutil.copytree(os.path.join(OUT, d), tmp / d)
+        if (CORE_CACHE / key).exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            os.replace(tmp, CORE_CACHE / key)
+        entries = sorted((p for p in CORE_CACHE.iterdir() if p.is_dir() and '.tmp' not in p.name),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in entries[CORE_CACHE_KEEP:]:
+            shutil.rmtree(old, ignore_errors=True)
+        print('core cache: stored %s' % key[:16], flush=True)
+    except OSError as e:
+        print('core cache: not stored (%s)' % e, flush=True)
 
 
 def main():
@@ -1171,6 +1417,16 @@ def main():
     ap.add_argument('-j', type=int, default=8)
     a = ap.parse_args()
     t0 = time.time()
+    key = core_inputs_key()
+    if core_cache_get(key):
+        print('done in %.0f s' % (time.time() - t0))
+        return
+    import build_slots
+    with build_slots.slot('build_wasm'):
+        build(a, t0, key)
+
+
+def build(a, t0, key):
     for d in (OUT, SHIM, OBJ):
         os.makedirs(d, exist_ok=True)
     shim_headers()
@@ -1418,6 +1674,7 @@ def main():
     print('module: %s, %d imports; census in %s' % (WASM, len(imports), os.path.join(OUT, 'census.json')))
     for k, v in sorted(owners.items(), key=lambda kv: -len(kv[1])):
         print('%6d  %s   e.g. %s' % (len(v), k, ', '.join(v[:5])))
+    core_cache_put(key)
     print('done in %.0f s' % (time.time() - t0))
 
 

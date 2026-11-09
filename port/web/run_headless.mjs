@@ -129,7 +129,7 @@ const impl={
   host_service_host_game_options_read:()=>0,host_service_host_setting_locked:()=>0,
   host_service_host_setting_save:()=>0,host_service_movie_update:()=>0,host_service_movie_playing:()=>0,
   host_service_host_poll_dump:()=>0,
-  host_service_graphics_threaded:()=>1,host_service_texpack_available:()=>0,
+  host_service_graphics_threaded:()=>1,host_service_texpack_available:()=>0,host_service_gs_scale:()=>0,
   host_pacing_period:()=>1/60,
 };
 const noops=`host_sleep_ms host_wait_wall host_dpi_aware host_callbacks_drain host_frame_registers host_frame_video host_capture_name
@@ -140,7 +140,7 @@ host_service_controls_apply
 host_service_movie_prepare host_service_movie_start host_service_movie_audio host_service_graphics_wait host_service_graphics_shutdown
 host_service_gs_vsync host_service_gs_pump_messages host_service_gs_window_title host_service_gs_native_view
 host_service_gs_window_apply host_service_gs_present_options_apply host_service_gs_window_close
-host_service_text_input_begin host_service_text_input_end host_service_host_backtrace host_service_presence host_service_voice_frame host_service_voice_place host_service_voice_mute host_service_voice_drop host_service_voice_state`.split(/\s+/);
+host_service_text_input_begin host_service_text_input_end host_service_host_backtrace host_service_presence host_service_voice_frame host_service_voice_place host_service_voice_mute host_service_voice_drop host_service_voice_state host_service_touch_field`.split(/\s+/);
 for(const n of noops)impl[n]=()=>{};
 for(const n of ['host_service_key_held','host_service_net_racing','host_service_net_seconds','host_service_net_server_ms','host_heartbeat_eip','host_service_launcher_open','host_service_presence_join'])impl[n]=()=>0;
 // Offline: no lobby and no chat (NET_IDLE, all zero; port/hle/online.c asks for the lobby outside
@@ -149,6 +149,7 @@ for(const n of ['host_service_key_held','host_service_net_racing','host_service_
   const stub={};for(const i of WebAssembly.Module.imports(nm))(stub[i.module]??={})[i.name]=()=>0;
   const x=new WebAssembly.Instance(nm,stub).exports,lobby=x.web_net_lobby_size(),chat=x.web_net_chat_size();
   impl.host_service_net_get_lobby=a=>{span(a,lobby).fill(0);};impl.host_service_net_get_chat=a=>{span(a,chat).fill(0);};}
+impl.host_service_net_offered=()=>0;  // headless runs stay offline
 const metadata=JSON.parse(fs.readFileSync(option('--imports',path.join(root,'build/web/imports.json'))));
 const coreBytes=fs.readFileSync(modulePath),threaded=definesSharedMemory(coreBytes);
 // As www/worker.js: the threaded core skips the waits that only order queued graphics work

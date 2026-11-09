@@ -11,9 +11,11 @@ DownhillRevived-<version>-mac-experimental.zip and -linux-experimental.zip, and 
     python port/tools/package_release.py --launcher PATH # a ready build_launcher.py DownhillRevived.exe
     python port/tools/package_release.py --platform mac --game PATH [--launcher PATH]
     python port/tools/package_release.py --merge OTHER/latest.json   # add another machine's platform
+    python port/tools/package_release.py --platform android         # the APK (signing key: BUILDING.md)
+    python port/tools/package_release.py --sums                     # only SHA256SUMS again
 
---platform is win, mac (Apple Silicon) or linux (x64); the default is the host's. The launcher is
-built for the host only (build_launcher.py), so each platform is packaged on its own machine (a
+--platform is win, mac (Apple Silicon), linux (x64) or android (arm64); the default is the host's.
+The launcher is built for the host only (build_launcher.py), so each platform is packaged on its own machine (a
 mac or linux layout can be looked at from Windows with --launcher and --game). mac and linux take
 the game as --game PATH (build_host64's targets for them); --exe is the same option.
 
@@ -30,7 +32,29 @@ reads (port/launcher/src-tauri/src/update.rs, finding 054): {"version", "url", "
 (the zip as a GitHub release asset of tag v<version>, or --base-url + the zip's name), "sha256"
 (the zip's), "size"}}}. Each run adds its platform to a latest.json of the same version already
 there (--merge adds the entries of another machine's). Publish the zips and latest.json, with every
-platform in it, as assets of the GitHub release tagged v<version>.
+platform in it, as assets of the GitHub release tagged v<version>. Every run (and --merge) also
+writes SHA256SUMS beside them: the SHA-256 of each release file there (DownhillRevived-<version>-*
+but the symbols, and latest.json), as sha256sum prints them; after copying another machine's
+files in, --sums writes it again. The symbols (KEPT_SUFFIXES: the Windows link map, Android's
+libmain.debug.so) stay beside the release files and are kept with them, never published: they
+name the code addresses of players' crash reports (finding 152).
+
+Android (finding 143, experimental): --platform android builds the release APK with
+port/android/build_apk.py --release from --wasm (signed with the key the DHD_ANDROID_* variables
+name; never in the repository) or takes a ready one (--apk), and puts it in the release folder as
+DownhillRevived-<version>-android-experimental.apk, with latest.json's "android" entry (the game's
+update notice reads it, port/host/android_update.c; launchers ignore the key). The APK carries
+LICENSE.txt and THIRD-PARTY-NOTICES.txt (with the Rust crates linked into libmain.so) as assets.
+--pgo-use PROFDATA builds libmain.so with that merged phone profile (build_apk.py's --pgo-use;
+finding 146: record one at least once per release).
+Checked: build_apk.check_release (one signer, the release certificate build_apk.RELEASE_CERT_SHA256
+unless --new-signing-key, not debuggable, version, arm64-v8a only), every file in
+it as the zips' are (game data names and bytes, servers, local paths), libmain.so's version and
+its absolute paths and servers as the game's.
+Kept beside it, not published: DownhillRevived-<version>-android-libmain.debug.so, build_host64.py's
+libmain.so before its symbols were stripped, when its GNU build ID is the APK's libmain.so's
+(dhd.log's backtrace and Android's tombstone give libmain.so+offsets; llvm-symbolizer
+--obj=that-file 0xOFFSET or llvm-addr2line -fe that-file 0xOFFSET name them; finding 152).
 
 The Windows zip holds one folder, DownhillRevived-<version>, with:
   DownhillRevived.exe      the launcher (port/launcher, finding 093; built by build_launcher.py): settings,
@@ -183,7 +207,7 @@ LINUX_SYMBOLS = {'GLIBC': LINUX_GLIBC, 'GCC': (4, 2, 0)}
 
 # The platforms whose builds are experimental (0.7.0: macOS and Linux): "-experimental" after the
 # platform in the zip's name. latest.json's key stays the platform's (update.rs PLATFORM).
-EXPERIMENTAL = ('mac', 'linux')
+EXPERIMENTAL = ('mac', 'linux', 'android')
 
 
 class Platform:
@@ -198,11 +222,13 @@ PLATFORMS = {
     'win': Platform('win', RUST_TRIPLE, '.exe', 'PE x64', 'Windows'),
     'mac': Platform('mac', 'aarch64-apple-darwin', '', 'Mach-O arm64', 'macOS'),
     'linux': Platform('linux', 'x86_64-unknown-linux-gnu', '', 'ELF x86-64', 'Linux'),
+    'android': Platform('android', 'aarch64-linux-android', '', 'ELF arm64', 'Android'),
 }
+PLATFORMS['android'].game, PLATFORMS['android'].launcher = 'libmain.so', None   # no launcher: the APK
 
 
 def binary_kind(data):
-    """'PE x64', 'Mach-O arm64', 'ELF x86-64', or None."""
+    """'PE x64', 'Mach-O arm64', 'ELF x86-64', 'ELF arm64', or None."""
     if data[:2] == b'MZ' and len(data) > 0x40:
         pe = int.from_bytes(data[0x3C:0x40], 'little')
         if data[pe:pe + 4] == b'PE\0\0' and data[pe + 4:pe + 6] == b'\x64\x86':  # IMAGE_FILE_MACHINE_AMD64
@@ -211,6 +237,8 @@ def binary_kind(data):
         return 'Mach-O arm64'
     if data[:5] == b'\x7fELF\x02' and int.from_bytes(data[18:20], 'little') == 62:  # ELFCLASS64, EM_X86_64
         return 'ELF x86-64'
+    if data[:5] == b'\x7fELF\x02' and int.from_bytes(data[18:20], 'little') == 183:  # ELFCLASS64, EM_AARCH64
+        return 'ELF arm64'
     return None
 
 
@@ -280,7 +308,7 @@ def code_ranges(data):
                     if struct.unpack_from('<I', data, section + 64)[0] & 0x80000400:  # S_ATTR_*_INSTRUCTIONS
                         yield offset, size
             at += cmd_size
-    elif kind == 'ELF x86-64':
+    elif kind in ('ELF x86-64', 'ELF arm64'):
         table, entry, count = struct.unpack_from('<Q', data, 0x28)[0], *struct.unpack_from('<HH', data, 0x3A)
         for k in range(count):
             kind_, flags, _, offset, size = struct.unpack_from('<IQQQQ', data, table + entry * k + 4)
@@ -540,8 +568,8 @@ def rust_notices(platform=PLATFORMS['win']):
     """The notices of the Rust crates linked into the platform's game and launcher (linked_crates, for its
     target), as text: a list, then each licence text once with the crates it covers, then the Apache
     License 2.0 text (also the WABT runtime's, THIRD-PARTY-NOTICES.txt)."""
-    both = {(p['name'], p['version']): p for p in linked_crates(triple=platform.triple) +
-            linked_crates(LAUNCHER_CRATE, 'dhd_launcher', (), platform.triple)}
+    launcher = linked_crates(LAUNCHER_CRATE, 'dhd_launcher', (), platform.triple) if platform.launcher else []
+    both = {(p['name'], p['version']): p for p in linked_crates(triple=platform.triple) + launcher}
     crates = [both[k] for k in sorted(both)]
     rows, texts, apache, mpl_without = [], {}, None, []
     for p in crates:
@@ -568,7 +596,8 @@ def rust_notices(platform=PLATFORMS['win']):
         if mpl is None:
             sys.exit('no MPL-2.0 text for %s; not packaged' % ', '.join(mpl_without))
         mpl[2].extend(mpl_without)
-    title = 'Rust crates linked into %s and %s' % (platform.game, platform.launcher)
+    title = ('Rust crates linked into %s and %s' % (platform.game, platform.launcher) if platform.launcher
+             else 'Rust crates linked into %s' % platform.game)
     out = [title,
            '=' * len(title),
            '',
@@ -603,10 +632,21 @@ def source_changes():
     return r.stdout.splitlines()
 
 
+def require_release_split(out):
+    """Stop unless the game in out was built from one unit or wasm2c's own parts (build_host64.py
+    --release, as every release before finding 151): its development chunks cost the game ~1.5 % on
+    a phone. build_host64.py writes which in split.txt (one, wasm2c, chunks)."""
+    split = out / 'split.txt'
+    kind = split.read_text().strip() if split.exists() else 'unknown (no split.txt)'
+    if kind not in ('one', 'wasm2c'):
+        sys.exit("%s: the game was built from %s C, not a release build (build_host64.py --release); "
+                 "not packaged" % (out, kind))
+
+
 def build_exe(wasm, sdl_lib, sdl_include, jobs):
     """dhd64.exe from the module, by build_host64.py on the Rust renderer, under WORK."""
     cmd = [sys.executable, str(ROOT / 'port' / 'tools' / 'build_host64.py'), str(wasm),
-           '--num-outputs', '8', '--sdl-lib', str(sdl_lib), '--sdl-include', str(sdl_include),
+           '--num-outputs', '8', '--release', '--sdl-lib', str(sdl_lib), '--sdl-include', str(sdl_include),
            '--out', str(WORK), '--jobs', str(jobs)]
     print('building: ' + ' '.join(cmd), flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
@@ -696,6 +736,143 @@ def sign_app(app):
     return True
 
 
+def names_server_or_path(content, settings):
+    """True when a packaged file (not the game, which exe_problems checks) names a server other than the
+    official one, or a local path. The text files may show the official server and example.org addresses,
+    nothing else. In the launcher the Rust string constants sit back to back
+    ("wss://dhd.skuza.appwss://ws://"); no host holds a scheme, so each scheme starts a new address. A
+    bare "ws://" constant may also run into the next strings (Linux: "ws://lobbiesminVersion..."): a
+    server address has a dot or a port, or is localhost, so a run of letters without either is not
+    one. The official address may run into the next constant the same way ("wss://dhd.skuza.appnamedhd":
+    dhd_settings' keys): its host followed by letters with no dot or port is still the official one."""
+    split = re.sub(rb'(?=(?:wss?|https?)://)', b'\0', content)
+    hosts = set(h.lower().rstrip(b'.') for h in re.findall(rb'wss?://([A-Za-z0-9.:-]+)', split))
+    hosts = {OFFICIAL_HOST if h.startswith(OFFICIAL_HOST) and re.fullmatch(rb'[a-z0-9]*', h[len(OFFICIAL_HOST):])
+             else h for h in hosts} - {b'races.example.org', OFFICIAL_HOST}
+    hosts = {h for h in hosts if b'.' in h or b':' in h or h.startswith(b'localhost')}
+    return bool(hosts or other_hosts(content) or any(
+        s.lower() in content.lower() for s in FORBIDDEN + sorted(server_strings(settings))))
+
+
+# Release files kept beside the published ones, never published (not in SHA256SUMS): the symbols that
+# name the code addresses of players' crash reports (finding 152)
+KEPT_SUFFIXES = ('.map', '.debug.so')
+
+
+def write_sums(folder, version):
+    """SHA256SUMS in folder: every release file of version there (DownhillRevived-<version>-*, but the
+    symbols, KEPT_SUFFIXES, which are kept, not published) and latest.json, as `sha256sum` prints them."""
+    names = sorted(p.name for p in folder.glob('DownhillRevived-%s-*' % version)
+                   if p.is_file() and not p.name.endswith(KEPT_SUFFIXES)) + (['latest.json'] if (folder / 'latest.json').exists() else [])
+    (folder / 'SHA256SUMS').write_text(''.join('%s  %s\n' % (hashlib.sha256((folder / n).read_bytes()).hexdigest(), n)
+                                               for n in names), encoding='utf-8', newline='\n')
+    return names
+
+
+def gnu_build_id(data):
+    """An ELF file's GNU build ID in hex (its NT_GNU_BUILD_ID note: name size 4, a descriptor of 8 to
+    64 bytes, type 3, "GNU"), '' without one."""
+    m = re.search(rb'\x04\x00\x00\x00([\x08-\x40])\x00\x00\x00\x03\x00\x00\x00GNU\x00', data)
+    return data[m.end():m.end() + m.group(1)[0]].hex() if m else ''
+
+
+def keep_android_symbols(apk_lib, out):
+    """build_host64.py's unstripped libmain.debug.so beside the release APK out, as
+    DownhillRevived-<version>-android-libmain.debug.so, when its build ID is apk_lib's (the APK's
+    libmain.so: --apk may name an APK of another build); the path kept, or None."""
+    debug = ROOT / 'build' / 'android' / 'libmain.debug.so'
+    wanted = gnu_build_id(apk_lib)
+    if not wanted or not debug.is_file() or gnu_build_id(debug.read_bytes()) != wanted:
+        print('  note: no libmain.debug.so with build ID %s; native crash frames of this APK can\'t be named'
+              % (wanted or '(none)'))
+        return None
+    kept = out.with_name(out.name.replace('-experimental.apk', '-libmain.debug.so'))
+    shutil.copyfile(debug, kept)
+    print('  symbols %s (build ID %s; keep it, never publish it: it names the libmain.so+0x... frames of '
+          'players\' crash reports)' % (kept, wanted))
+    return kept
+
+
+def android_release(a, platform, out, manifest_path, page):
+    """--platform android: the release APK into out (see the module's doc); returns 0."""
+    sys.path.insert(0, str(ROOT / 'port' / 'android'))
+    import build_apk  # noqa: E402
+    name, code = build_apk.version()
+    if name != a.version:
+        sys.exit('build_apk.py reads version %s, not %s' % (name, a.version))
+    if a.apk:
+        apk = a.apk.resolve()
+    else:
+        notices = rust_notices(platform)
+        texts = WORK / 'android-assets'
+        if texts.exists():
+            shutil.rmtree(texts)
+        texts.mkdir(parents=True)
+        (texts / 'LICENSE.txt').write_bytes(lf(ROOT / 'LICENSE'))
+        (texts / 'THIRD-PARTY-NOTICES.txt').write_bytes(lf((RELEASE / 'THIRD-PARTY-NOTICES.txt').read_bytes().rstrip()
+                                                          + b'\n\n' + notices.encode('utf-8')))
+        cmd = [sys.executable, str(ROOT / 'port' / 'android' / 'build_apk.py'), '--release', '--wasm', str(a.wasm.resolve()),
+               '--jobs', str(a.jobs), '--assets', str(texts)] + (['--new-signing-key'] if a.new_signing_key else [])             + (['--pgo-use', str(a.pgo_use.resolve())] if a.pgo_use else [])
+        print('building: ' + ' '.join(cmd), flush=True)
+        if subprocess.run(cmd).returncode:
+            sys.exit('build_apk.py --release failed')
+        apk = build_apk.OUT / build_apk.release_apk_name(name)
+    if not apk.is_file():
+        sys.exit('%s: no such APK' % apk)
+    problems, facts = build_apk.check_release(apk, name, code, a.new_signing_key)
+    elf = a.elf.read_bytes()
+    rsp = build_apk.OUT / 'work' / 'link.rsp'   # build_host64.py's: the Rust library linked into libmain.so
+    rust_libs = [Path(x.strip().strip('"')) for x in rsp.read_text(encoding='utf-8').splitlines()
+                 if x.strip().strip('"').endswith('libdhd_render.a')] if rsp.exists() else []
+    if not rust_libs:
+        print('note: no Rust library named in %s: its bytes are not exempt from the retail scan' % rsp)
+    work = WORK / 'android-check'
+    work.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(apk) as z:
+        entries = z.namelist()
+        for need in ('lib/arm64-v8a/libmain.so', 'lib/arm64-v8a/libSDL3.so', 'assets/LICENSE.txt',
+                     'assets/THIRD-PARTY-NOTICES.txt', 'classes.dex', 'AndroidManifest.xml'):
+            if need not in entries:
+                problems.append('no %s in the APK' % need)
+        for path in entries:
+            content, file_name = z.read(path), path.rsplit('/', 1)[-1]
+            if GAME_DATA.search(file_name):
+                problems.append('%s looks like game data' % path)
+            if path.startswith('lib/'):
+                if not path.startswith('lib/arm64-v8a/') or binary_kind(content) != platform.kind:
+                    problems.append('%s is not an arm64 library' % path)
+            if path == 'lib/arm64-v8a/libmain.so':
+                if b'dhd-port %s ' % a.version.encode() not in content:
+                    problems.append('libmain.so was not built with version %s' % a.version)
+                (work / 'libmain.so').write_bytes(content)
+                problems += ['libmain.so: ' + p for p in exe_problems(work / 'libmain.so', server_strings(a.settings))]
+            elif names_server_or_path(content, a.settings):
+                problems.append('%s names a server or a local path' % path)
+            runs = game_data_runs(content, elf, rust_libs if path.endswith('libmain.so') else [])
+            problems += ['%s holds game data at +0x%X: %d bytes = %s' % (path, at, n, scan_retail.elf_place(elf, e))
+                         for at, e, n in runs[:20]]
+    if problems:
+        sys.exit('%s is not fit to publish:\n  %s' % (apk, '\n  '.join(problems[:40])))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(apk, out)
+    with zipfile.ZipFile(out) as z:
+        keep_android_symbols(z.read('lib/arm64-v8a/libmain.so'), out)
+    apk_hash = hashlib.sha256(out.read_bytes()).hexdigest()
+    url = (a.base_url.rstrip('/') + '/' + out.name if a.base_url
+           else '%s/download/v%s/%s' % (RELEASES, a.version, out.name))
+    done = write_manifest(manifest_path, a.version, {'android': {'url': url, 'sha256': apk_hash, 'size': out.stat().st_size}},
+                          page)
+    sums = write_sums(out.parent, a.version)
+    print('%s (%d KB) sha256 %s' % (out, out.stat().st_size // 1024, apk_hash))
+    print('  %s; signed by %s, certificate SHA-256 %s (schemes %s); native code %s; not debuggable'
+          % (facts['badging'], facts['signer_dn'], facts['signer_sha256'], ' '.join(facts['schemes']), facts['native_code']))
+    if facts['new_signer']:
+        print(build_apk.NEW_SIGNER_NOTE % facts['signer_sha256'])
+    print('  %s: version %s, %s; platforms %s' % (manifest_path, a.version, url, ', '.join(done)))
+    print('  %s: %s' % (out.parent / 'SHA256SUMS', ', '.join(sums)))
+    return 0
+
+
 def write_manifest(path, version, entries, page):
     """latest.json with entries ({platform: {url, sha256, size}}) added to those of a latest.json of the
     same version already there. The top level's url, sha256 and size are the Windows zip's: what the
@@ -739,8 +916,18 @@ def main():
     ap.add_argument('--settings', type=Path, help="a dhd.ini whose server line must not be in the package")
     ap.add_argument('--elf', type=Path, default=ROOT / 'iso' / 'SCUS_971.77', help='your retail ELF, for the game-data scan')
     ap.add_argument('--no-installer', action='store_true', help='only the zip: no Windows installer, AppImage or DMG')
+    ap.add_argument('--apk', type=Path, help='android: a ready build_apk.py --release APK (default: build it)')
+    ap.add_argument('--pgo-use', type=Path, metavar='PROFDATA',
+                    help="android: build libmain.so with this merged profile (build_apk.py's --pgo-use)")
+    ap.add_argument('--new-signing-key', action='store_true',
+                    help='android: a deliberate key change: accept a signer other than build_apk.RELEASE_CERT_SHA256')
+    ap.add_argument('--sums', action='store_true', help='only write SHA256SUMS again in the release folder')
     a = ap.parse_args()
     platform = PLATFORMS[a.platform]
+    if a.pgo_use and (platform.key != 'android' or a.apk or a.merge or a.sums):
+        sys.exit('--pgo-use is for building the APK: --platform android without --apk, --merge or --sums')
+    if a.pgo_use and not a.pgo_use.is_file():
+        sys.exit('%s: no such profile' % a.pgo_use)
     version = header_version()
     if a.version and a.version != version:
         sys.exit('--version %s, but port/include/version.h says %s (the exe reports that one); bump the header '
@@ -749,7 +936,8 @@ def main():
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', a.version):
         sys.exit('version %r: MAJOR.MINOR.PATCH digits only (the updater and the server compare them)' % a.version)
     name = 'DownhillRevived-%s' % a.version
-    out = (a.out or ROOT / 'build' / 'release' / ('%s-%s.zip' % (name, platform.zip_tag))).resolve()
+    suffix = '.apk' if platform.key == 'android' else '.zip'
+    out = (a.out or ROOT / 'build' / 'release' / ('%s-%s%s' % (name, platform.zip_tag, suffix))).resolve()
     if (ROOT / 'build').resolve() not in out.parents or on_system_drive(out):
         sys.exit('the zip goes under build/ (never tracked, never on C:)' + HOW)
     manifest_path = out.with_name('latest.json')
@@ -761,6 +949,10 @@ def main():
                 sys.exit('%s: version %s with platforms needed (it has %s)' % (other, a.version, m.get('version')))
             done = write_manifest(manifest_path, a.version, m['platforms'], page)
         print('%s: version %s, %s' % (manifest_path, a.version, ', '.join(done)))
+        print('%s: %s' % (out.with_name('SHA256SUMS'), ', '.join(write_sums(out.parent, a.version))))
+        return 0
+    if a.sums:
+        print('%s: %s' % (out.with_name('SHA256SUMS'), ', '.join(write_sums(out.parent, a.version))))
         return 0
     changes = source_changes()
     if changes:
@@ -768,6 +960,8 @@ def main():
                  + '\n  '.join(changes[:20]))
     if not a.elf.exists():
         sys.exit('%s: the retail ELF is needed to check that no game data is packaged' % a.elf)
+    if platform.key == 'android':
+        return android_release(a, platform, out, manifest_path, page)
     notices = rust_notices(platform)  # before the build: a crate with an unusable licence stops it early
 
     if a.game:
@@ -789,6 +983,7 @@ def main():
             import sdl3  # noqa: E402
             sdl_lib, sdl_include = sdl3.build(sdl3.X64_TARGET)
         exe = build_exe(wasm, Path(sdl_lib).resolve(), Path(sdl_include).resolve(), a.jobs)
+    require_release_split(exe.parent)
     data = exe.read_bytes()
     if binary_kind(data) != platform.kind:
         sys.exit('%s is not a %s executable (%s)' % (exe, platform.kind, binary_kind(data) or 'unknown'))
@@ -849,20 +1044,7 @@ def main():
         if runs:
             sys.exit('%s holds game data (runs of the retail ELF):\n  %s' % (file_name, '\n  '.join(
                 '+0x%X: %d bytes = %s' % (at, n, scan_retail.elf_place(elf, e)) for at, e, n in runs[:20])))
-        # the text files may show the official server and example.org addresses, nothing else. In the
-        # launcher the Rust string constants sit back to back ("wss://dhd.skuza.appwss://ws://"); no host
-        # holds a scheme, so each scheme starts a new address. A bare "ws://" constant may also run into
-        # the next strings (Linux: "ws://lobbiesminVersion..."): a server address has a dot or a port,
-        # or is localhost, so a run of letters without either is not one. The official address may run
-        # into the next constant the same way ("wss://dhd.skuza.appnamedhd": dhd_settings' keys): its
-        # host followed by letters with no dot or port is still the official one.
-        split = re.sub(rb'(?=(?:wss?|https?)://)', b'\0', content)
-        hosts = set(h.lower().rstrip(b'.') for h in re.findall(rb'wss?://([A-Za-z0-9.:-]+)', split))
-        hosts = {OFFICIAL_HOST if h.startswith(OFFICIAL_HOST) and re.fullmatch(rb'[a-z0-9]*', h[len(OFFICIAL_HOST):])
-                 else h for h in hosts} - {b'races.example.org', OFFICIAL_HOST}
-        hosts = {h for h in hosts if b'.' in h or b':' in h or h.startswith(b'localhost')}
-        if path != game_path and (hosts or other_hosts(content) or any(
-                s.lower() in content.lower() for s in FORBIDDEN + sorted(server_strings(a.settings)))):
+        if path != game_path and names_server_or_path(content, a.settings):
             sys.exit('%s names a server or a local path; not packaged' % file_name)
 
     # The same files unzipped, to try before publishing: Windows' in build/release/<name>/ as always.
@@ -933,6 +1115,7 @@ def main():
             for path in made:
                 print('  installer %s (%d KB) sha256 %s' % (path, path.stat().st_size // 1024,
                                                             hashlib.sha256(path.read_bytes()).hexdigest()))
+    print('  %s: %s' % (out.with_name('SHA256SUMS'), ', '.join(write_sums(out.parent, a.version))))
     return 0
 
 

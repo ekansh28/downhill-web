@@ -1,15 +1,16 @@
 /* Online rooms in the game's popup style (menu_page.c), with physical keyboard text entry.
    The flow (finding 092): Create or Join waits on the ONLINE page until the server has the player
-   in the room; then the game's own rider screen, once, and its ride to the shop, whose exit
-   (port_online_shell, menu 18) opens the RACE ROOM over the rider screen (the rider on its
-   stand, Change Rider to choose again); the host starts; loading; the race. The shop's own pages
-   (bike, jersey, colour) are skipped as since finding 065's rework: see finding 092. The host chooses the track and starts when everyone is ready. The
-   existing online.c setup event carries each complete preview choice. */
+   in the room; then the game's own rider screen, once, its ride to the shop and the shop's own
+   pages (BIKES / JERSEYS / BIKE COLOR, finding 128), whose START (port_online_shop_commit) keeps
+   the choice and opens the RACE ROOM over the rider screen (the rider on its stand, Change Rider
+   to choose again); the host starts; loading; the race. The host chooses the track and starts
+   when everyone is ready. The existing online.c setup event carries each complete choice. */
 #include "hle.h"
 #include "menu_page.h"
 #include "text_input.h"
 #include "settings_table.h"  /* the rider name's rule (dhd_settings, port/render/settings) */
 #include "../net/net.h"
+#include "../net/lobby_row.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,18 +21,38 @@
    good dump with other sectors around them is taken too. */
 static const char us_files_sha256[] = "c8c17bcae383daf9f2feadc7f6d7476c43d659ab8d66127a299b01311f2a3476";
 
-/* The tracks with a 2-4 player level (online.c mp_level) and the riders every save has
-   (online.c regular): the game's indexes and names, as the online launcher lists them. */
-static const struct { int index; const char *name; } tracks[] = {
-    {0, "ALPINE"}, {1, "MOAB"}, {2, "JUNGLE"}, {3, "PERU"}, {4, "PERU TDH"}, {5, "GLACIER"},
-    {6, "ALPINE MX"}, {7, "MOAB MX"}, {8, "JUNGLE MX"}, {9, "PERU MX"}, {10, "JUNGLE TD"},
-    {11, "AUBER ST"}, {12, "FUJI"}, {13, "MOAB TDH"}, {14, "GLACIER X"}, {15, "AUBER MX"},
-    {16, "AUBER STD"}, {19, "BC"}, {20, "CITY"}, {22, "GLACIER T"}, {23, "MOSH"}, {24, "ALPINE T"},
-    {25, "BC TDX"}};
+/* The online tracks and the riders every save has (online.c regular): the game's indexes and
+   names, as the online launcher lists them. Every PC races its own one-player race (finding 044),
+   so a track needs only its one-player level: Salt City MX (17) and TD (18), which have no 2-4
+   player level, are in. Not 21, DUAL: the career's one-on-one Dual Slalom, with two start places
+   and no Single Event entry (func_001E3810 skips it), finding 166. */
+/* Retail's full event names (also used by its Single Event and records pages).
+   Read from the player's data image; omit country, keep FR/MX/TD suffixes intact. */
+extern const char *D_0026EFE8[];
+static const struct { int index; } tracks[] = {
+    {0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9}, {10}, {11}, {12},
+    {13}, {14}, {15}, {16}, {17}, {18}, {19}, {20}, {22}, {23}, {24}, {25}};
+static const char *track_name(int index)
+{
+    static char names[26][64];
+    if (index < 0 || index > 25) return "?";
+    if (!names[index][0]) {
+        const char *full = D_0026EFE8[index], *country = strchr(full, ',');
+        const char *mode = strrchr(full, ' ');
+        if (country && mode && mode > country)
+            snprintf(names[index], sizeof names[index], "%.*s%s", (int)(country - full), full, mode);
+        else snprintf(names[index], sizeof names[index], index == 23 ? "%s (Arena)" : "%s", full);
+    }
+    return names[index];
+}
 static const struct { int index; const char *name; } riders[] = {
     {0, "COSMO"}, {1, "MAI"}, {2, "AJAX"}, {3, "JONNIE"}, {4, "KALOLO"}, {5, "T-BAG"}, {8, "DRUD"},
     {10, "RAKEL"}, {13, "JEN"}, {14, "WOODY"}};
 #define COUNT(a) ((int)(sizeof a / sizeof *a))
+/* MOSH (23) is the Mosh Pit arena, where riders knock each other around: not a race. The host can
+   pick it from the track list, but NEXT / RANDOM after a race (the server's pickOnly) and Left /
+   Right on the room's track never land on it (finding 128). */
+static int arena(int track) { return track == 23; }
 
 static const char code_letters[] = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";  /* the server's join codes */
 static const char name_letters[] = SETTING_NAME_LETTERS;
@@ -86,6 +107,8 @@ static int room_closed;  /* the race room was left this frame: nothing more to d
    while the camera flies to the rider screen it opens over; hold_rider until the press that
    closed it is released; resume_home: back on the title, ONLINE opens again. */
 static int in_shell, room_pending, hold_rider, resume_home;
+/* shop_done: the shop's START kept the choice (port_online_shop_commit); its Back path is running */
+static int shop_done;
 /* connecting: Create or Join was chosen; the page waits for the server's room (connect_poll). */
 static int connecting;
 /* A friend's join from Discord (finding 136): the SDK's callback leaves the room's code in
@@ -98,7 +121,7 @@ static int public_room, room_settings_sent, room_ready_sent, room_track = 0, roo
 extern int func_00182290(int track);
 static int track_limit(int track) { int kind = func_00182290(track); return kind == 2 ? 10 : kind == 1 ? 8 : 6; }
 static int rotation_sent;  /* the host's track list for the room's Then rule, once a room */
-static int32_t chosen_outfit[3], chosen_cycle[3];
+static int32_t chosen_outfit[3], chosen_cycle[3], chosen_colour;  /* colour: SETUP+0x254, the BIKE COLOR page's */
 #define SHELL_WORD(a) (*(int32_t *)(uintptr_t)(0x08000000u + (a)))
 #define SETUP_WORD(offset) SHELL_WORD(0x4B25A0 + (offset))
 void port_online_choose_begin(int flight);
@@ -123,12 +146,10 @@ void func_0023C8D8(int mode, int view);
 void func_0023D898(int view, float *distance, float *aspect);
 void func_0023D8D8(int view, float distance, float aspect);
 float func_00203C28(void *animation);
-void func_001F79D8(int level, int frames);  /* the shell's screen fade */
-extern int D_00275CB0[];  /* each rider's camera take out of the shop (func_001F1500) */
 int func_00220230(int port);  /* the buttons held on a pad */
 static float shell_distance, shell_aspect;
 static int offline_mode, offline_submode, offline_players;
-void hle_online_selected_ride(int rider, const int32_t *outfit, const int32_t *bike);
+void hle_online_selected_ride(int rider, const int32_t *outfit, const int32_t *bike, int colour);
 
 /* SharedMenu can change a one-view shell's render mode in place; the stock popup
    manager only restores its view descriptor when it began with multiple views. */
@@ -209,6 +230,14 @@ static void unlock_all(void)
     hle_mc_hold = unlocked = 1;
     hle_log("online menu: everything unlocked while online\n");
 }
+
+/* Every bike online (finding 128): the shop's BIKES page lists the save's bike garage (frame,
+   fork, wheels of each bike; profile +0x11C68, a new save has 3), not the unlock bits. While
+   online the garage's readers answer from PC SETTINGS Unlock All's list (patches_unlock.py,
+   port_unlock_list): the save's bikes, then the 41 preset bikes the retail unlock-all code adds
+   (D_0026DEA0: the entry and bonus bikes and every pro's), and online the single race's stock bike
+   17 4 0 too (issue 18's default). Nothing is written to the save. */
+int port_online_bikes(void) { return unlocked; }
 
 /* Back to offline play: the player's own unlocks again. */
 void port_online_relock(void)
@@ -515,22 +544,13 @@ static void list_row(int i)
     char now[24];
     double t = host_service_net_server_ms();
     for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == l->track) track = tracks[k].name;
+        if (tracks[k].index == l->track) track = track_name(tracks[k].index);
     if (strcmp(l->version, version)) snprintf(now, sizeof now, "OTHER VERSION");
     else if (l->full || l->players >= l->max_players) snprintf(now, sizeof now, "FULL");
-    else if (!strcmp(l->phase, "racing") && l->finish_ends_at > t) {
-        int left = (int)((l->finish_ends_at - t + 999) / 1000);
-        snprintf(now, sizeof now, "ENDS IN %d:%02d", left / 60, left % 60);
-    } else if (!strcmp(l->phase, "racing")) {
-        int so_far = l->race_started_at && t > l->race_started_at ? (int)((t - l->race_started_at) / 1000) : 0;
-        snprintf(now, sizeof now, "RACING %d:%02d", so_far / 60, so_far % 60);
-    } else if (!strcmp(l->phase, "intermission") && l->next_race_at > t) {
-        int left = (int)((l->next_race_at - t + 999) / 1000);
-        snprintf(now, sizeof now, "NEXT IN %d:%02d", left / 60, left % 60);
-    } else if (!strcmp(l->phase, "starting")) snprintf(now, sizeof now, "STARTING");
-    else snprintf(now, sizeof now, "OPEN");
-    snprintf(text[i], ROW_TEXT, "%.14s  %d/%d  %s  %s", l->room_name[0] ? l->room_name : l->host_name,
-             l->players, l->max_players, track, now);
+    else net_lobby_now(l, t, now, sizeof now);  /* counted only on a known server clock (finding 135) */
+    /* where the room runs (EU, NA, ASIA...; finding 135): a far room shows before joining it */
+    snprintf(text[i], ROW_TEXT, "%.14s  %s%s%d/%d  %s  %s", l->room_name[0] ? l->room_name : l->host_name,
+             l->region, l->region[0] ? "  " : "", l->players, l->max_players, track, now);
 }
 
 static void enter_room(int create, const char *code)
@@ -650,9 +670,18 @@ static void room_sync(const NetLobby *l)
     if (l->is_host && !rotation_sent) {
         /* the tracks in the list's order: the room's Then rule (next / random) walks them */
         static unsigned char ids[COUNT(tracks)];
-        for (int k = 0; k < COUNT(tracks); k++) ids[k] = (unsigned char)(tracks[k].index | ((10 - track_limit(tracks[k].index)) / 2 << 5));
+        for (int k = 0; k < COUNT(tracks); k++)
+            ids[k] = (unsigned char)(tracks[k].index | ((10 - track_limit(tracks[k].index)) / 2 << 5) | (arena(tracks[k].index) ? 0x80 : 0));
         host_service_net_rotation(GADDR(ids), COUNT(tracks));
         rotation_sent = 1;
+        hle_log("online menu: the room's track list: %d tracks, MOSH PIT pick-only\n", COUNT(tracks));
+        /* tests (DHD_NET_SCRIPTED with DHD_NET_TEST_THEN=same|next|random): the host's Then rule */
+        const char *test_then = getenv("DHD_NET_SCRIPTED") ? getenv("DHD_NET_TEST_THEN") : NULL;
+        if (test_then) {
+            int then = !strcmp(test_then, "same") ? 0 : !strcmp(test_then, "random") ? 2 : 1;
+            host_service_net_rules(l->finish_window, l->next_race, then);
+            hle_log("online menu: room rules for the test: then %s\n", test_then);
+        }
     }
     if (!room_ready_sent) {
         hle_log("online menu: room %s%s, version %s\n", l->code, l->is_host ? " (host)" : "", version);
@@ -721,7 +750,7 @@ static void leave_room(MenuPage *p)
 
 enum { RF_TRACK, RF_BOTS, RF_CHEATS, RF_PUBLIC, RF_RULES, RF_RIDER, RF_READY, RF_START, RF_LEAVE, RF_COUNT };
 enum { RULE_WINDOW, RULE_NEXT, RULE_THEN, RULE_PLAYERS, RULES };
-enum { TOASTS = 3, TRACK_COLUMNS = 4 };
+enum { TOASTS = 3, TRACK_COLUMNS = 2 };
 /* The layout, in the popup view's 640 x 224 (menu_draw_size) */
 enum { L_X = 48, L_W = 166, TOP = 40, CARD_X = 224, CARD_W = 368, CARD_Y = 52, CARD_H = 11, CARD_GAP = 0,
        MID_H = 117, BAR_Y = 164, BAR_H = 18, BAR_X = 48, BAR_W = 544, STATUS_Y = 189, TITLE_Y = 14 };
@@ -745,6 +774,9 @@ static double ready_heard[NET_MAX_SLOTS];     /* per card: the last ready sound 
 static int countdown_shown = -1;
 static char seen_race[NET_MAX_SLOTS][12];     /* per card: its race state last seen (news) */
 static int seen_host = -1;
+static int seen_track = -1;                   /* the room's track last seen (TRACK CHANGED) */
+static int raced_track = -1;                  /* the track this PC's race was on, and its room: */
+static char raced_code[8];                    /* back from it, a change made meanwhile is news */
 static char seen_event[32];                   /* the server's last notice seen (start_cancelled) */
 static char title_text[32], footer_text[96];
 /* The room's chat (finding 139): L1 or Y opens it over the room; typing goes to its line (Enter
@@ -795,7 +827,6 @@ static RoomNow room_now(void)
     for (int i = 0; i < l->nmembers; i++) {
         const NetMember *m = &l->member[i];
         r.ready += m->ready;
-        r.reconnecting += (l->members_reconnecting >> i) & 1;  /* a slot the server holds for a dropped player */
         if (r.racing && !strcmp(m->race_state, "racing")) r.riding++;
         if (r.racing && !strcmp(m->race_state, "finished")) r.finished++;
         if (m->id != l->member_id) continue;
@@ -881,25 +912,22 @@ static int seconds_to(double at)
     return ms > 0 ? (int)((ms + 999) / 1000) : 0;
 }
 
-static const char *track_name(int index)
-{
-    for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == index) return tracks[k].name;
-    return "?";
-}
-
 /* ---- what the buttons do ---- */
+
+static int sent_track = -1;  /* the track this PC chose last: its own change isn't news */
+static double sent_at;
 
 static void send_settings(int track, int options, int is_public)
 {
     NetRoomSettings s = {track, options, is_public, -1, -1, NULL};
+    if (track >= 0) sent_track = track, sent_at = host_seconds();
     host_service_net_set_room(GADDR(&s));
 }
 
 static void change_setting(int f, int by)
 {
     if (f == RF_TRACK) {
-        room_track = (room_track + by + COUNT(tracks)) % COUNT(tracks);
+        do room_track = (room_track + by + COUNT(tracks)) % COUNT(tracks); while (arena(tracks[room_track].index));
         send_settings(tracks[room_track].index, -1, -1);
     } else if (f == RF_BOTS)
         send_settings(-1, room_options = room.laps ^ ROOM_NO_BOTS, -1);
@@ -1182,13 +1210,15 @@ static void room_mouse(MenuPage *p, int x, int y, int moved, int left, int wheel
 /* ---- news: who came, went or got ready, with a sound (each card's ready sound at most every
    3 s, so toggling Ready can't spam the room) and a note at the top for a moment ---- */
 
-static void note(const char *text, const int *colour)
+static void note_for(const char *text, const int *colour, double seconds)
 {
     memmove(toast, toast + 1, sizeof toast[0] * (TOASTS - 1));
     snprintf(toast[TOASTS - 1].text, sizeof toast[0].text, "%s", text);
     toast[TOASTS - 1].colour = colour;
-    toast[TOASTS - 1].until = host_seconds() + 3.4;
+    toast[TOASTS - 1].until = host_seconds() + seconds;
 }
+
+static void note(const char *text, const int *colour) { note_for(text, colour, 3.4); }
 
 static void room_news(void)
 {
@@ -1196,8 +1226,16 @@ static void room_news(void)
     if (l->state != NET_LOBBY) return;
     double now = host_seconds();
     char line[48];
-    if (seen_count < 0) {  /* the room as it was when this page opened: nothing new yet */
+    if (seen_count < 0) {  /* the room as it was when this page opened: nothing new yet, */
         seen_count = l->nmembers;
+        /* except a track changed during this PC's race (the Then rule, the host's pick) */
+        if (raced_track >= 0 && !strcmp(raced_code, l->code) && l->track != raced_track) {
+            snprintf(line, sizeof line, "TRACK CHANGED: %s", track_name(l->track));
+            note_for(line, amber, 5.0);
+            menu_play("S_NEXT");
+            hle_log("online menu: %s (during the race)\n", line);
+        }
+        raced_track = -1;
         goto keep;
     }
     for (int i = 0; i < l->nmembers; i++) {
@@ -1229,10 +1267,19 @@ static void room_news(void)
                          l->member[i].name);
                 note(line, NULL);
             }
-    int from, limit, to;
+    int from, limit, to, switched = 0;
     if (strcmp(seen_event, l->last_event) && sscanf(l->last_event, "track_switch:%d:%d:%d", &from, &limit, &to) == 3) {
         snprintf(line, sizeof line, "%s TAKES %d: RACING %s", track_name(from), limit, track_name(to));
         note(line, amber);
+        hle_log("online menu: %s\n", line);
+        switched = 1;
+    }
+    /* Ready stays when the track changes (finding 128): the ready players hear and read it. Not
+       this PC's own choice, nor the grid's switch just above. */
+    if (seen_track >= 0 && l->track != seen_track && !switched && !(l->track == sent_track && now - sent_at < 10)) {
+        snprintf(line, sizeof line, "TRACK CHANGED: %s", track_name(l->track));
+        note_for(line, amber, 5.0);
+        menu_play("S_NEXT");
         hle_log("online menu: %s\n", line);
     }
     if (!strcmp(l->last_event, "start_cancelled") && strcmp(seen_event, l->last_event))
@@ -1249,6 +1296,7 @@ static void room_news(void)
 keep:
     seen_count = l->nmembers;
     seen_host = l->host_id;
+    seen_track = l->track;
     snprintf(seen_event, sizeof seen_event, "%s", l->last_event);
     for (int j = 0; j < l->nmembers; j++) {
         seen_id[j] = l->member[j].id, seen_ready[j] = l->member[j].ready;
@@ -1278,6 +1326,21 @@ static MenuStyle fit(const char *t, MenuStyle s, int percent, int w)
     return f;
 }
 
+/* Whether t fits w at fit's smallest size or above (menu_text_width measures as capitals). */
+static int fits(const char *t, MenuStyle s, int percent, int w)
+{
+    MenuStyle f = fit(t, s, percent, w);
+    return menu_text_width(t, &f) <= X(w);
+}
+
+/* The first of the texts (a NULL ends them) that fits w; the last one if none does. */
+static const char *first_fit(const char *const *texts, MenuStyle s, int percent, int w)
+{
+    int i = 0;
+    while (texts[i + 1] && !fits(texts[i], s, percent, w)) i++;
+    return texts[i];
+}
+
 static void draw_setting(int f, int y, const char *label, const char *value, const RoomNow *r)
 {
     char line[64];
@@ -1291,14 +1354,20 @@ static void draw_setting(int f, int y, const char *label, const char *value, con
 static void draw_left(const RoomNow *r)
 {
     const NetLobby *l = &room;
-    char line[48];
     box(L_X, TOP, L_W, MID_H, 90);
     /* the track: a big name; the host changes it here (left/right) or from the list (Cross) */
     int cx = L_X + L_W / 2, on = rf == RF_TRACK && !track_list && !leave_ask;
     put(MENU_CENTRE, cx, TOP + 6, "TRACK", menu_style(st_off, 80, -1, 0, 0));
-    snprintf(line, sizeof line, r->host ? "< %s >" : "%s", track_name(l->track));
     if (on) bar(L_X + 6, TOP + 17, L_W - 12, 14);
-    put(MENU_CENTRE, cx, TOP + 18, line, fit(line, on ? st_on : st_row, 125, L_W - 16));
+    /* the host's arrows at the highlight's ends; the name fitted between them with a gap (mixed
+       case draws up to a tenth wider than the capitals measure) */
+    const char *track = track_name(l->track);
+    MenuStyle ts = fit(track, on ? st_on : st_row, 125, r->host ? L_W - 62 : L_W - 24);
+    put(MENU_CENTRE, cx, TOP + 18, track, ts);
+    if (r->host) {
+        put(MENU_LEFT, L_X + 10, TOP + 18, "<", ts);
+        put(MENU_RIGHT, L_X + L_W - 10, TOP + 18, ">", ts);
+    }
     hit(&hits[RF_TRACK], L_X, TOP + 14, L_W, 20);
     draw_setting(RF_BOTS, TOP + 39, "COMPUTER RIDERS", l->laps & ROOM_NO_BOTS ? "OFF" : "ON", r);
     draw_setting(RF_CHEATS, TOP + 52, "CHEATS", l->laps & ROOM_CHEATS ? "ON" : "OFF", r);
@@ -1308,9 +1377,17 @@ static void draw_left(const RoomNow *r)
     if (on) bar(L_X + 6, TOP + 77, L_W - 12, 11);
     put(MENU_CENTRE, cx, TOP + 78, "ROOM RULES", on ? st_on : st_row);
     /* short: the left column is narrow beside two columns of cards (AUTO is always 30 s) */
-    snprintf(line, sizeof line, "%s - %s - %s%s", window_name(l->finish_window), l->next_race ? "HOST STARTS" : "AUTO",
-             then_name(l->then), l->rules_pending ? " *" : "");
-    put(MENU_CENTRE, cx, TOP + 89, line, fit(line, st_off, 70, L_W - 12));
+    /* the longest form that fits the panel: "HOST STARTS" -> "HOST", then "NEXT TRACK" -> "NEXT" */
+    char forms[3][48];
+    const char *pending = l->rules_pending ? " *" : "", *then_short = l->then == 0 ? "SAME" : l->then == 2 ? "RANDOM" : "NEXT";
+    snprintf(forms[0], 48, "%s - %s - %s%s", window_name(l->finish_window), l->next_race ? "HOST STARTS" : "AUTO",
+             then_name(l->then), pending);
+    snprintf(forms[1], 48, "%s - %s - %s%s", window_name(l->finish_window), l->next_race ? "HOST" : "AUTO",
+             then_name(l->then), pending);
+    snprintf(forms[2], 48, "%s - %s - %s%s", window_name(l->finish_window), l->next_race ? "HOST" : "AUTO", then_short, pending);
+    const char *const texts[] = {forms[0], forms[1], forms[2], NULL};
+    const char *rules = first_fit(texts, st_off, 70, L_W - 16);
+    put(MENU_CENTRE, cx, TOP + 89, rules, fit(rules, st_off, 70, L_W - 16));
     hit(&hits[RF_RULES], L_X, TOP + 75, L_W, 24);
     rect(L_X + 8, TOP + 99, L_W - 16, 1, (const int[]){0, 0, 0}, 128);
     /* the join code; Circle (or a click) copies it */
@@ -1344,16 +1421,14 @@ static void draw_card(int i)
     }
     const NetMember *m = &l->member[i];
     RoomNow now = room_now();
-    /* a dropped player the server is holding the slot for (finding 140): AWAY, a red stripe */
-    int reconnecting = (l->members_reconnecting >> i) & 1;
-    const char *tag = reconnecting ? "AWAY" : m->choosing ? "CHOOSING" : m->ready ? "READY" : "WAIT";
+    const char *tag = m->choosing ? "CHOOSING" : m->ready ? "READY" : "WAIT";
     if (now.racing && !strcmp(m->race_state, "racing")) tag = "RACING";
     else if (now.racing && !strcmp(m->race_state, "finished")) tag = "DONE";
     else if (now.racing && !strcmp(m->race_state, "dnf")) tag = "OUT";
     else if (now.starting && m->ready) tag = "STARTING";
     snprintf(line, sizeof line, "%d %.9s%s", i + 1, m->name, m->id == l->host_id ? " HOST" : m->id == l->member_id ? " YOU" : "");
     for (char *c = line; *c; c++) if (*c >= 'a' && *c <= 'z') *c -= 32;
-    rect(x, y + 1, 2, 18, reconnecting ? red : m->ready ? green : amber, 128);
+    rect(x, y + 1, 2, 18, m->ready ? green : amber, 128);
     put(MENU_LEFT, x + 5, y + 2, line, fit(line, st_row, 85, 112));
     put(MENU_RIGHT, x + w - 5, y + 2, tag, menu_style(st_on, 70, -1, 0, 0));
     detail[0] = 0;
@@ -1468,18 +1543,73 @@ static void draw_status(const RoomNow *r)
     put(MENU_CENTRE, 320, STATUS_Y, line, fit(line, c ? tint(st_row, 100, c) : st_row, 100, 600));
 }
 
+/* The notes, newest first, top right in three rows. The middle row is beside the title (the
+   game draws it, centred at TITLE_Y: about 17.5 units a letter, so 9 each side plus a gap), so a
+   note goes there only if it fits beside it; otherwise into the next free row. */
 static void draw_toasts(void)
 {
     double now = host_seconds();
-    int y = 3;
+    static const int row_y[3] = {3, 16, 29};
+    int used[3] = {0, 0, 0};
+    int beside = 632 - 14 - (320 + (int)strlen(title_text) * 9 + 6);
     for (int i = TOASTS - 1; i >= 0; i--) {
         if (toast[i].until <= now) continue;
         MenuStyle s = toast[i].colour ? tint(st_row, 75, toast[i].colour) : menu_style(st_on, 75, -1, 0, 0);
+        int row = 0;
+        while (row < 3 && (used[row] || (row == 1 && !fits(toast[i].text, s, 100, beside)))) row++;
+        if (row == 3) continue;  /* no room now: it shows when a row is free, while it lasts */
+        used[row] = 1;
+        s = fit(toast[i].text, s, 100, row == 1 ? beside : 610);
         int w = menu_text_width(toast[i].text, &s) * 640 / vw + 14;
-        box(632 - w, y, w, 11, 90);
-        put(MENU_RIGHT, 625, y + 2, toast[i].text, s);
-        y += 13;
+        box(632 - w, row_y[row], w, 11, 90);
+        put(MENU_RIGHT, 625, row_y[row] + 2, toast[i].text, s);
     }
+}
+
+/* Loading-page landscape from the player's disc, not a repository asset. TEX has
+   the 512-square indexed image; RTX has its 16-square CSM1 palette. Use the upper
+   340 lines after rotating the loading mesh's upside-down UVs, excluding its cutout.
+   Cache the ten destinations; variants retain their event name beside the picture. */
+static const uint16_t *track_preview(int track)
+{
+    static const char *const pages[] = {"LALPSE", "LMOASE", "LJUNSE", "LPERSE", "LGLASE", "LAUBSE", "LFUJSE", "LBCSE", "LCITSE", "LMOSHSE"};
+    static const unsigned char destination[26] = {0,1,2,3,3,4,0,1,2,3,2,5,6,1,4,5,5,8,8,7,8,8,4,9,0,7};
+    static uint16_t *pictures[10];
+    static int attempted[10];
+    int d = destination[track];
+    if (!attempted[d]) {
+        attempted[d] = 1;
+        unsigned char *tex = malloc(264192), *rtx = malloc(133120);
+        char path[64]; uint32_t sector, size;
+        int ok = tex && rtx;
+        snprintf(path, sizeof path, "LOADBAR/%s.TEX", pages[d]);
+        ok = ok && cdvd_find(path, &sector, &size) && size == 262512 && cdvd_read(sector, (size + 2047) / 2048, tex);
+        snprintf(path, sizeof path, "LOADBAR/%s.RTX", pages[d]);
+        ok = ok && cdvd_find(path, &sector, &size) && size == (d == 9 ? 1136 : 132336) && cdvd_read(sector, (size + 2047) / 2048, rtx);
+        if (ok) {
+            /* 256 x 160 for the picture's bilinear texture: each pixel the mean of its 2 x 2-3
+               source pixels, then 5 bits a channel with a 4 x 4 ordered dither (PSMCT16) */
+            static const unsigned char bayer[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+            enum { W = MENU_PICTURE_W, H = MENU_PICTURE_H };
+            pictures[d] = menu_picture_new();
+            if (pictures[d]) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+                unsigned sum[3] = {0, 0, 0}, n = 0, pixel = 0x8000;
+                for (int sy = y * 340 / H; sy < (y + 1) * 340 / H; sy++) for (int sx = x * 512 / W; sx < (x + 1) * 512 / W; sx++, n++) {
+                    unsigned k = tex[0x170 + (511 - sy - (d == 9 ? 80 : 0)) * 512 + 511 - sx];
+                    k = (k & ~24u) | ((k & 8) << 1) | ((k & 16) >> 1);
+                    for (int c = 0; c < 3; c++) sum[c] += rtx[(d == 9 ? 0x10 : 0x60) + k * 4 + c];
+                }
+                for (int c = 0; c < 3; c++) {
+                    unsigned v = (sum[c] + n / 2) / n + bayer[y & 3][x & 3] / 2;
+                    pixel |= (v > 255 ? 31 : v >> 3) << (5 * c);
+                }
+                pictures[d][y * W + x] = (uint16_t)pixel;
+            }
+        }
+        hle_log("online menu: preview %s %s\n", pages[d], pictures[d] ? "loaded from disc" : "unavailable");
+        free(tex); free(rtx);
+    }
+    return pictures[d];
 }
 
 static void draw_track_list(void)
@@ -1487,17 +1617,30 @@ static void draw_track_list(void)
     rect(0, 0, 640, 224, (const int[]){0, 0, 0}, 90);
     box(36, 24, 568, 176, 110);
     put(MENU_CENTRE, 320, 30, "CHOOSE A TRACK", menu_style(st_row, 115, -1, 0, 0));
+    /* Two columns of names; the rider limit goes beside the picture, so each name has room. 13 rows
+       of 10.5 units fit between the title and BACK. */
     for (int i = 0; i < COUNT(tracks); i++) {
-        int x = 52 + (i % TRACK_COLUMNS) * 134, y = 48 + (i / TRACK_COLUMNS) * 20, on = i == track_cursor;
-        if (on) bar(x + 2, y, 128, 12);
-        char label[48];
-        snprintf(label, sizeof label, "%s - %d", tracks[i].name, track_limit(tracks[i].index));
-        put(MENU_CENTRE, x + 66, y + 1, label, on ? st_on : i == room_track ? menu_style(st_on, 100, -1, 0, 0) : st_row);
-        if (i == room_track) rect(x + 30, y + 12, 72, 1, (const int[]){0xC0, 0xB8, 0x40}, 128);  /* the current one */
-        hit(&track_hits[i], x, y - 2, 132, 18);
+        int x = 44 + (i % TRACK_COLUMNS) * 192, y = 45 + (i / TRACK_COLUMNS) * 21 / 2, on = i == track_cursor;
+        const char *name = track_name(tracks[i].index);
+        MenuStyle s = fit(name, on || i == room_track ? st_on : st_row, 90, 178);
+        if (on) bar(x + 2, y - 1, 186, 10);
+        put(MENU_CENTRE, x + 95, y, name, s);
+        if (i == room_track) {  /* the current one: underlined under its name's own width, below the letters */
+            int u = menu_text_width(name, &s) * 640 / vw;
+            rect(x + 95 - u / 2, y + 9, u, 1, (const int[]){0xC0, 0xB8, 0x40}, 128);
+        }
+        hit(&track_hits[i], x, y - 1, 190, 10);
     }
-    put(MENU_CENTRE, 320, 178, "BACK", st_row);
-    hit(&track_back, 270, 175, 100, 14);
+    int at = tracks[track_cursor].index;
+    char limit[32];
+    snprintf(limit, sizeof limit, "UP TO %d RIDERS", track_limit(at));
+    const uint16_t *picture = track_preview(at);
+    box(430, 58, 164, 100, 110);
+    if (picture) menu_draw_picture(438 * vw / 640, 66 * vh / 224, 148 * vw / 640, 49 * vh / 224, picture);
+    put(MENU_CENTRE, 512, 124, track_name(at), fit(track_name(at), st_on, 95, 150));
+    put(MENU_CENTRE, 512, 139, limit, fit(limit, st_row, 80, 150));
+    put(MENU_CENTRE, 320, 184, "BACK", st_row);
+    hit(&track_back, 270, 181, 100, 14);
 }
 
 static void draw_rules(const RoomNow *r)
@@ -1712,18 +1855,40 @@ static void room_draw(MenuPage *p)
     }
     draw_left(r);
     {
-        char head[40];
+        char head[64];
         int all = l->nmembers >= 2 && r->ready == l->nmembers;
         if (r->racing) {
             put(MENU_LEFT, CARD_X + 3, TOP + 1, "RACE RESULTS - LIVE", menu_style(st_row, 80, -1, 0, 0));
             snprintf(head, sizeof head, "%d FINISHED - %d RACING", r->finished, r->riding);
             put(MENU_RIGHT, CARD_X + CARD_W - 3, TOP + 1, head, tint(st_row, 80, blue));
         } else {
-            if (l->last_race_id) snprintf(head, sizeof head, "LAST RACE - %s", track_name(l->last_race_track));
-            else snprintf(head, sizeof head, "PLAYERS %d/%d", l->nmembers, l->max_players);
-            put(MENU_LEFT, CARD_X + 3, TOP + 1, head, menu_style(st_row, 80, -1, 0, 0));
+            /* the ready count on the right; on the left the longest form that fits beside it */
+            MenuStyle st = menu_style(st_row, 80, -1, 0, 0);
             snprintf(head, sizeof head, "%d/%d READY", r->ready, l->nmembers);
-            put(MENU_RIGHT, CARD_X + CARD_W - 3, TOP + 1, head, all ? tint(st_row, 80, green) : menu_style(st_row, 80, -1, 0, 0));
+            put(MENU_RIGHT, CARD_X + CARD_W - 3, TOP + 1, head, all ? tint(st_row, 80, green) : st);
+            /* the left text's room, less a quarter: mixed-case track names draw wider than
+               menu_text_width measures them (as capitals); a tenth was not enough (finding 132) */
+            int room_w = (CARD_W - 6 - menu_text_width(head, &st) * 640 / vw - 10) * 3 / 4;
+            char forms[4][64];
+            const char *what = l->last_race_id ? track_name(l->last_race_track) : NULL, *region = l->room_region;
+            char players[16];
+            snprintf(players, sizeof players, "PLAYERS %d/%d", l->nmembers, l->max_players);
+            /* before a race: the players and where the room runs (finding 135), "- EU SERVER", then
+               "- EU", then left out; after a race: the last race's track only (the region is in the
+               list and was in this header before the race) */
+            if (what) {
+                snprintf(forms[0], 64, "LAST RACE - %s", what);
+                snprintf(forms[1], 64, "%s", what);
+                forms[2][0] = forms[3][0] = 0;
+            } else {
+                snprintf(forms[0], 64, "%s%s%s%s", players, region[0] ? " - " : "", region, region[0] ? " SERVER" : "");
+                snprintf(forms[1], 64, "%s%s%s", players, region[0] ? " - " : "", region);
+                snprintf(forms[2], 64, "%s", players);
+                forms[3][0] = 0;
+            }
+            const char *const texts[] = {forms[0], forms[1], forms[2][0] ? forms[2] : NULL, forms[3][0] ? forms[3] : NULL, NULL};
+            const char *left = first_fit(texts, st, 80, room_w);
+            put(MENU_LEFT, CARD_X + 3, TOP + 1, left, fit(left, st_row, 80, room_w));
         }
     }
     for (int i = 0; i < MEMBER_ROWS; i++) draw_card(i);
@@ -1747,7 +1912,7 @@ static void room_open(void)
 {
     rf = rf_bar = selected ? RF_READY : RF_RIDER;
     track_list = leave_ask = rules_open = room_closed = 0;
-    seen_host = -1;
+    seen_host = seen_track = -1;
     memset(seen_race, 0, sizeof seen_race);
     chat_open = chat_unread = chat_seen_valid = 0, chat_key_held = 1;  /* a Y held as the room opens waits */
     room_buttons = 0xFFFF, repeat_buttons = repeat_frames = 0;
@@ -1783,9 +1948,11 @@ static void room_update(MenuPage *p)
     if (l->started || l->state == NET_RACING) {
         hle_log("online menu: room %s: the race starts\n", l->code);
         race = 1;
+        raced_track = l->track;
+        snprintf(raced_code, sizeof raced_code, "%s", l->code);
         track_list = leave_ask = rules_open = 0;
         chat_close(0);
-        hle_online_selected_ride(chosen_rider, chosen_outfit, chosen_cycle);
+        hle_online_selected_ride(chosen_rider, chosen_outfit, chosen_cycle, chosen_colour);
         hle_online_from_menu();
         menu_page_close(p);
         return;
@@ -1865,8 +2032,8 @@ static void page_update(MenuPage *p, int cursor)
             list_shown = 1;
             for (int i = 0; i < list_count; i++)
                 if (list_joinable(&list[i])) {
-                    hle_log("online menu: quick race: room %s (%d/%d, %s)\n", list[i].code, list[i].players,
-                            list[i].max_players, list[i].phase);
+                    hle_log("online menu: quick race: room %s (%d/%d, %s, region %s)\n", list[i].code, list[i].players,
+                            list[i].max_players, list[i].phase, list[i].region[0] ? list[i].region : "unknown");
                     enter_room(0, list[i].code);
                     return;
                 }
@@ -2030,7 +2197,7 @@ int port_online_menu(void)
         status[0] = 0;  /* a room that closed leaves its reason for HOME */
     }
     race = 0;
-    in_shell = 0;
+    in_shell = shop_done = 0;
     connecting = 0;
     join_read();
     if (join_state == 1) join_state = 2;  /* DHD_NET_ROOM, ONLINE chosen by hand first */
@@ -2071,6 +2238,22 @@ int port_main_label(const int *table, int index)
     return index < 3 ? table[index] : (int)(uintptr_t)"ONLINE";
 }
 
+/* The main menu's rows as shown: the game's three, ONLINE, EXIT GAME (exit_menu.c). A build
+   without online play (Android and the browser: host_service_net_offered, finding 143) shows no
+   ONLINE row, so its fourth row is EXIT GAME; port_main_choice turns a shown row into the row the
+   patched menu acts on. */
+int port_main_rows(void)
+{
+    return host_service_net_offered() ? 5 : 4;
+}
+
+int port_main_choice(int shown)
+{
+    return shown >= 3 && !host_service_net_offered() ? shown + 1 : shown;
+}
+
+/* The choice as the setup block has it: after the shop's START (retail's func_0013A170 commits
+   the bike there), or at GET READY. */
 static void keep_selection(void)
 {
     chosen_rider = SETUP_WORD(0x290);
@@ -2080,18 +2263,62 @@ static void keep_selection(void)
         chosen_outfit[i] = SETUP_WORD(0x1B8 + 4 * i);
         chosen_cycle[i] = SETUP_WORD(0x11C + 4 * i);
     }
+    chosen_colour = SETUP_WORD(0x254);  /* func_0013A170 commits the BIKE COLOR page's cursor there */
     selected = 1;
     host_service_net_pick(-1, chosen_rider / 32, chosen_bike);
     host_service_net_set_ready(0);
-    hle_log("online menu: selection rider %d (carousel place %d, player %d), outfit %d %d %d, bike %d %d %d\n",
+    hle_log("online menu: selection rider %d (carousel place %d, player %d), outfit %d %d %d, bike %d %d %d, colour %d\n",
             chosen_rider, chosen_spot, SHELL_WORD(0x29DF68), chosen_outfit[0], chosen_outfit[1], chosen_outfit[2],
-            chosen_cycle[0], chosen_cycle[1], chosen_cycle[2]);
+            chosen_cycle[0], chosen_cycle[1], chosen_cycle[2], chosen_colour);
+}
+
+/* The shop's START online (patched func_0013BA60, right after retail's own commit, func_0013A170,
+   and func_00140C38): the bike, jersey and bike colour the player chose are in the setup block now.
+   Keep them, and 1: the shop then leaves as its Back does (the shell's own way back to the rider
+   screen, camera included), not to the level chooser; port_online_shell opens the room. Finding
+   092 section 3 read the bike too early (before this commit); here it is retail's committed one. */
+int port_online_shop_commit(void)
+{
+    if (!choosing) return 0;
+    keep_selection();
+    hle_log("online menu: the shop's choice kept\n");
+    shop_done = 1;
+    return 1;
+}
+
+/* Scripted test runs (DHD_NET_SCRIPTED) press nothing in the shop: its START on its first frame,
+   so they go on to the room as before. DHD_NET_TEST_SHOP=1 leaves the shop to the pads. */
+int port_online_shop_auto(void)
+{
+    static int automatic = -1;
+    if (automatic < 0) automatic = getenv("DHD_NET_SCRIPTED") && !getenv("DHD_NET_TEST_SHOP");
+    return choosing && automatic;
+}
+
+void hle_online_default_bike(int rider, int32_t bike[3]);
+
+/* The ride to the shop (menu 18), once, before the shop opens (func_001F1500 runs it when the
+   camera arrives): the setup's bike, where the shop's BIKES page starts online (patched
+   func_00139BF8: func_0013A270 finds it in the list), is this rider's last choice, else the
+   rider's default (a pro's own bike, the others the stock one, issue 18): START without a change
+   keeps it. */
+static void shop_prepare(void)
+{
+    int32_t bike[3];
+    int rider = SETUP_WORD(0x290);
+    if (selected && chosen_rider == rider) memcpy(bike, chosen_cycle, sizeof bike);
+    else hle_online_default_bike(rider, bike);
+    for (int k = 0; k < 3; k++) SETUP_WORD(0x11C + 4 * k) = bike[k];
+    hle_log("online menu: the shop opens on bike %d %d %d (rider %d)\n", bike[0], bike[1], bike[2], rider);
 }
 
 /* The shell's frame, before its menu runs; 1 skips that menu this frame. Only online selection
    enters here. The room is a page over the rider screen (menu 3):
-   - GET READY (menu 9) keeps the choice and flies the camera back to the rider screen, as the
-     main menu's SINGLE PLAYER does, instead of loading a race before everyone is ready;
+   - the shop's START (port_online_shop_commit) keeps the choice; its Back path back on the shell,
+     the rider screen's Back cleanup and the camera to the rider's stand, as below;
+   - GET READY (menu 9), which the shop no longer reaches online, keeps the choice and flies the
+     camera back to the rider screen, as the main menu's SINGLE PLAYER does, instead of loading a
+     race before everyone is ready;
    - the rider screen's Back (Triangle) opens the room instead of leaving for the title;
    - Change Selection closes the room on the rider screen itself;
    - leaving the room (or losing it) takes the rider screen's own Back to the title, where the
@@ -2111,18 +2338,16 @@ int port_online_shell(void)
     NetLobby connection;
     host_service_net_get_lobby(GADDR(&connection));
     int lost = connection.state == NET_FAILED || connection.state == NET_IDLE;
-    if (menu == 18) {
-        /* The shop's START: when its camera has flown out, retail goes on to the level chooser,
-           which sets up the race's loading (func_00139BF8) and takes the camera. The choice is
-           complete here: keep it and leave as the rider screen's Back does; the room (with the
-           host's track) opens over the rider screen. */
-        void *animation = (void *)(uintptr_t)(0x08000000u + 0x4C6370);
-        int rider_index = SHELL_WORD(0x4C6910 + 4 * SHELL_WORD(0x29DF68));
-        func_00203590(animation, 0x2330, 0, D_00275CB0[rider_index]);
-        if (func_00203C28(animation) < 1.0f) return 0;
-        if (!lost) keep_selection();
+    static int shop_prepared;
+    if (menu != 18) shop_prepared = 0;
+    else if (!shop_prepared && !lost) shop_prepared = 1, shop_prepare();
+    if (shop_done && menu != 18) {
+        /* The shop has closed by its Back path (func_00139BF8's cancel, func_001F1500's way back):
+           leave as the rider screen's Back does; the room (with the host's track) opens over the
+           rider screen, on the player's rider. */
+        hle_log("online menu: the shop closed (menu %d): back to the room\n", menu);
+        shop_done = 0;
         selection_end();
-        func_001F79D8(0, 0x3C);  /* the shop's exit faded to black; the level chooser fades back */
         return 1;  /* the main menu next frame: the flight to the rider screen below */
     }
     if (room_pending && (menu == 15 || menu == 0)) room_pending = 0;  /* backed out meanwhile */
@@ -2220,6 +2445,6 @@ int port_online_single_race(void) { return choosing; }
 const char *port_track_name(int index)
 {
     for (int k = 0; k < COUNT(tracks); k++)
-        if (tracks[k].index == index) return tracks[k].name;
+        if (tracks[k].index == index) return track_name(tracks[k].index);
     return NULL;
 }

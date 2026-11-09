@@ -1,11 +1,11 @@
 // Wire protocol constants and pure helpers. The specification is docs/online-protocol.md.
 
-export const PROTOCOL = 2;
+export const PROTOCOL = 4;
 
 export const MAX_MEMBERS = 10;
 export const DEFAULT_MAX_PLAYERS = 10;
 export const MAX_TEXT_BYTES = 4096;
-/** A STATE frame carries all of a player's riders (port/net/net.h NET_FRAME_MAX). */
+/** The largest binary WebSocket message (port/net/net.h NET_FRAME_MAX); only PING/PONG use it now. */
 export const MAX_BINARY_BYTES = 3072;
 
 export const HELLO_TIMEOUT_MS = 10_000;
@@ -78,7 +78,8 @@ export function tokensEqual(a: string, b: string): boolean {
 // the game no longer uses; the server drops them.)
 export const FRAME_PING = 3;
 export const FRAME_PONG = 4;
-/** State sync (finding 044): a rider snapshot and a gameplay event, relayed as they are. */
+/** State sync (finding 044): a bundle of rider snapshots and a gameplay event. They travel over the
+ *  Realtime SFU (finding 158), never this server; a WebSocket message of either type is dropped. */
 export const FRAME_STATE = 5;
 export const FRAME_EVENT = 6;
 export const PING_MAX_PAYLOAD = 32;
@@ -95,6 +96,15 @@ export const CLOSE_CODES = {
   kicked: 4007,
   hello_timeout: 4008,
   client_outdated: 4009,
+  /** The operator turned online off (the kill switch in the D1 store; finding 161). */
+  online_off: 4010,
+  /** Too many connections or new rooms from one address in a minute (wrangler.jsonc ratelimits). */
+  rate_limited: 4011,
+  /** A member sent more messages or race frames than the game ever does, after a warning
+      (src/guard.ts TEXT_PER_WINDOW, BINARY_PER_WINDOW). The warning is a non-fatal too_fast. */
+  too_fast: 4012,
+  /** The operator banned this address hash or install id (src/guard.ts findBan). */
+  banned: 4013,
 } as const;
 export type ErrorCode = keyof typeof CLOSE_CODES | "not_host" | "not_ready" | "bad_value" | "slow_down";
 
