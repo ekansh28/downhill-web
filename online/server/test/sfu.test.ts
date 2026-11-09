@@ -493,6 +493,74 @@ describe("TURN over TLS fallback", () => {
   });
 });
 
+describe("browser TURN: credentials carried into the new offer (finding 205)", () => {
+  const keys = { REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token", TURN_KEY_ID: "key", TURN_KEY_API_TOKEN: "token" };
+
+  it("asks, gets its own credentials once, and an offer with turn:true keeps them for the new session", async () => {
+    const { clients, code } = await startedRace(2);
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const fake = fakeRealtime();
+    try {
+      await runInDurableObject(stub, async (room: any) => {
+        room.env = { ...room.env, ...keys };
+        for (const member of room.state.members) { member.sfu = { id: `fake-${member.id}`, phase: "connect", channels: [] }; member.sfuAttempt = 1; }
+      });
+      clients[1].sendJson({ type: "sfu_turn" });
+      const got = await clients[1].json("sfu_turn");
+      expect(got.credential).toBe("c".repeat(32));
+      // The browser's second offer, with its relay: the credentials are not revoked, and count for it.
+      clients[1].sendJson({ type: "sfu_offer", sdp: "private", turn: true });
+      expect((await clients[1].json("sfu_answer")).sdp).toBe("SFU");
+      await runInDurableObject(stub, async (room: any) => {
+        await room.sfuQueue;
+        const me = room.state.members[1];
+        expect(me.sfuAttempt).toBe(2);
+        expect(me.turnAttempt).toBe(2);
+        expect(me.turnUser).toBe("u".repeat(32));
+      });
+      expect(fake.calls.filter(c => c.path.endsWith("/revoke"))).toHaveLength(0);
+      // Once per session: a second ask for the new session is refused, nothing is minted.
+      clients[1].sendJson({ type: "sfu_turn" });
+      expect((await clients[1].json("error")).message).toContain("One TURN credential per session");
+      expect(fake.calls.filter(c => c.path.endsWith("generate-ice-servers"))).toHaveLength(1);
+      // The other racer neither hears of them nor holds any.
+      await expect(clients[0].next(f => typeof f === "string" && /sfu_turn|cccccc|uuuuuu/.test(f), 200)).rejects.toThrow();
+      await runInDurableObject(stub, async (room: any) => { expect(room.state.members[0].turnUser).toBeUndefined(); });
+      // An offer without the flag revokes them as before.
+      clients[1].sendJson({ type: "sfu_offer", sdp: "private" });
+      await clients[1].json("sfu_answer");
+      await runInDurableObject(stub, async (room: any) => { await room.sfuQueue; expect(room.state.members[1].turnUser).toBeUndefined(); });
+      expect(fake.calls.filter(c => c.path.endsWith(`/credentials/${"u".repeat(32)}/revoke`))).toHaveLength(1);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("turn:true without credentials (or with nobody's to keep) changes nothing, and without keys nothing is sent", async () => {
+    const { host, code } = await Client.host();
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const fake = fakeRealtime();
+    try {
+      await runInDurableObject(stub, async (room: any) => { room.env = { ...room.env, REALTIME_APP_ID: "app", REALTIME_APP_TOKEN: "token" }; });
+      host.sendJson({ type: "sfu_offer", sdp: "private" });
+      await host.json("sfu_answer");
+      // No TURN key on the deployment: asking mints nothing and sends nothing; the session stays.
+      host.sendJson({ type: "sfu_turn" });
+      await expect(host.next(f => typeof f === "string" && /sfu_turn|error/.test(f), 200)).rejects.toThrow();
+      host.sendJson({ type: "sfu_offer", sdp: "private", turn: true });
+      expect((await host.json("sfu_answer")).sdp).toBe("SFU");
+      await runInDurableObject(stub, async (room: any) => {
+        await room.sfuQueue;
+        expect(room.state.members[0].turnUser).toBeUndefined();
+        expect(room.state.members[0].sfuAttempt).toBe(2);
+      });
+      expect(fake.calls.filter(c => c.path.includes("/turn/"))).toHaveLength(0);
+    } finally {
+      fake.restore();
+    }
+  });
+});
+
 describe("late failures of replaced Realtime sessions", () => {
   for (const kind of ["sfu_offer", "sfu_connected"]) {
     it(`${kind}: an old API failure cannot fail the replacement`, async () => {

@@ -1005,7 +1005,13 @@ export class Room extends DurableObject<Env> {
         me.sfuOffers.push(now);
         attempt = (me.sfuAttempt ?? 0) + 1;
         me.sfuAttempt = attempt;
-        if (me.sfu || me.turnUser) await this.clearSfu(me);
+        // A browser cannot add a relay to a session already answered (finding 205): it asks for
+        // TURN credentials (sfu_turn), then offers anew with "turn":true and its own, still valid
+        // credentials. They stay with this member and now count for the new session (one mint per
+        // session, never sent again); any other offer revokes them as before.
+        const keepTurn = m.turn === true && !!me.turnUser && (me.turnUntil ?? 0) > now + 60_000;
+        if (me.sfu || me.turnUser) await this.clearSfu(me, keepTurn);
+        if (keepTurn) me.turnAttempt = attempt;
         await this.save();
         const opened = await api.open(m.sdp);
         // Replaced meanwhile, or gone: a session nobody connects ends by itself after 30 s.
@@ -1679,12 +1685,12 @@ export class Room extends DurableObject<Env> {
       member is gone; a subscription that doesn't close stays marked closing on its subscriber's
       session and is tried again by the subscription pass (finding 179). Its subscribers hear
       sfu_closed. */
-  private async clearSfu(member: Member): Promise<void> {
+  private async clearSfu(member: Member, keepTurn = false): Promise<void> {
     const api = new Realtime(this.env as Env & SfuSecrets);
     const session = member.sfu;
     delete member.sfu;
     delete member.sfuConnected; delete member.sfuReadyRace; delete member.releasedRace;
-    await this.clearTurn(member);
+    if (!keepTurn) await this.clearTurn(member);
     if (session) {
       try {
         await api.close(session);

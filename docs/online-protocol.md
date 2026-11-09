@@ -344,6 +344,12 @@ A member's session lives as long as its stay in the room (finding 177):
   8656) and refreshes its allocation and its channel bindings itself (`port/render/net/src/turn.rs`);
   between races, once its credentials are 35 minutes old, the client offers a new session, which
   gets new credentials.
+- A browser has no relay to add to a session already answered (finding 205), so it asks
+  `sfu_turn` 2 s after `sfu_answer` if it has not connected, builds a new connection with the
+  returned servers and `iceTransportPolicy` `relay`, and sends a new `sfu_offer` with
+  `"turn":true`. If this member's own credentials are still valid (over a minute left), the room
+  keeps them for the new session instead of revoking them, and a further `sfu_turn` for it is
+  the usual `bad_value`. Any other offer revokes them as above. An older server ignores the field.
 - A racer whose own connection isn't up 10 s after the race's `start` (no `sfu_connected`; the
   room's `SFU_CONNECT_MS`) leaves the race alone, as below: the others stop expecting its channels
   and are released. Its session is kept for the next race. Measured setups (finding 175): from the
