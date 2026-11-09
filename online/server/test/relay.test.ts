@@ -92,3 +92,11 @@ describe("relay races (RACE_TRANSPORT auto)", () => {
     for (const s of starts) expect(s.transport).toBe("relay");
   });
 });
+
+describe("voice in a relay race (finding 202)", () => {
+  it("the room copies a racer's voice to the other racers, stamped with its race slot", async () => {
+    const { clients } = await race(3, {});
+    clients[2].ws.send(new Uint8Array([7, 9, 2, 11, 1, 0, 1, 2]).buffer);
+    for (const c of [clients[0], clients[1]]) expect([...(await c.binary())].slice(0, 2)).toEqual([7, 2]);
+  });
+});

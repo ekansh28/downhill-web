@@ -15,12 +15,10 @@ describe("voice anywhere in the room", () => {
     await expect(bo.next((f) => typeof f !== "string", 100)).rejects.toThrow("timed out");
   });
 
-  it("in a race: stamped with the sender's race slot, both ways", async () => {
-    const { clients } = await startedRace(3);
+  it("in an SFU race the racers hear each other over the SFU: the room doesn't copy it to them", async () => {
+    const { clients } = await startedRace(3);  // the tests' RACE_TRANSPORT: sfu
     clients[2].ws.send(voice(2));
-    for (const c of [clients[0], clients[1]]) expect([...(await c.binary())].slice(0, 2)).toEqual([7, 2]);
-    clients[0].ws.send(voice(3));
-    for (const c of [clients[1], clients[2]]) expect([...(await c.binary())].slice(0, 2)).toEqual([7, 0]);
+    for (const c of [clients[0], clients[1]]) await expect(c.next((f) => typeof f !== "string", 150)).rejects.toThrow("timed out");
   });
 
   it("50 frames a second for a few seconds without the guard's too_fast", async () => {

@@ -125,7 +125,8 @@ fs.writeFileSync(path.join(pub, '_headers'), [
   '  Cross-Origin-Resource-Policy: same-origin', '  Cache-Control: no-cache', ''].join('\n'));
 
 // 2. the online disc check of the image the site streams, kept while the image is unchanged
-const vars = { MIN_VERSION: site.minVersion || '0.7.6', LEADERBOARD_SUBMIT_MAX: '30' };
+// SFU_STATE_CHANNELS: two STATE channels a racer (finding 202: a lost chunk holds only half the snapshots)
+const vars = { MIN_VERSION: site.minVersion || '0.7.6', LEADERBOARD_SUBMIT_MAX: '30', SFU_STATE_CHANNELS: '2' };
 const r2 = [];
 // The boot list (www/disc_store.js records it; record_boot.mjs saves it): the page fetches these blocks before Start.
 const bootFile = path.join(out, 'disc-boot.json');

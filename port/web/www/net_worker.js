@@ -105,11 +105,11 @@ async function start(m) {
     else if (s.kind === 'frame' && current) arrived(current, new Uint8Array(s.data), gameNow());
   };
   function send(sock, data, binary) {
-    if (binary && sfuRace && (data[0] === 5 || data[0] === 6)) {  // an SFU race's frame: the page sends it
+    if (binary && sfuRace && (data[0] === 5 || data[0] === 6 || data[0] === 7)) {  // an SFU race's frame: the page sends it
       const copy = data.slice();
       sfu.postMessage({ kind: 'frame', data: copy.buffer }, [copy.buffer]);
       sentAt = gameNow();
-      return true;
+      if (data[0] !== 7) return true;  // voice goes to the room too, for the members watching (room.ts)
     }
     const ws = sockets.get(sock);
     if (ws?.readyState !== 1) return false;

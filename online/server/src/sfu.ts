@@ -3,6 +3,8 @@ export interface SfuSecrets {
   REALTIME_APP_ID?: string; REALTIME_APP_TOKEN?: string;
   /** The TURN key (Realtime > TURN) for the fallback over TLS (finding 158, round 4). */
   TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string;
+  /** "2": two STATE channels (finding 202; this fork's site sets it, port/web/host/deploy.mjs), else one (upstream's). */
+  SFU_STATE_CHANNELS?: string;
 }
 export interface SfuSession { id: string; phase: "connect" | "ready" | "failed"; channels: Allocation[]; }
 /** One channel on a session: its own publication (local) or a subscription to `memberId`'s
@@ -16,8 +18,17 @@ export function clientChannels(channels: Allocation[]): Allocation[] {
   return channels.map(({ memberId, name, channelId, local }) => ({ memberId, name, channelId, local }));
 }
 type Json = Record<string, unknown>;
-const policies = [{ dataChannelName: "state", ordered: false, maxRetransmits: 0 },
-                  { dataChannelName: "events", ordered: true }];
+// Two STATE channels (this fork, finding 202): a sender takes them in turn. Cloudflare forwards a
+// subscriber's channels ordered and reliable (finding 173), so a lost chunk holds the later messages
+// of its own channel until it is resent; the other channel's go on meanwhile, so a receiver whose
+// SCTP can't be patched (a browser) still gets every second snapshot instead of none for a second.
+const allPolicies = [{ dataChannelName: "state", ordered: false, maxRetransmits: 0 },
+                     { dataChannelName: "state2", ordered: false, maxRetransmits: 0 },
+                     { dataChannelName: "events", ordered: true }];
+/** The channels a member publishes and subscribes: state2 only with SFU_STATE_CHANNELS "2". */
+function policiesFor(secrets: SfuSecrets) {
+  return secrets.SFU_STATE_CHANNELS === "2" ? allPolicies : allPolicies.filter((p) => p.dataChannelName !== "state2");
+}
 
 /**
  * TURN credentials last this long (seconds). They are minted once per member's Realtime session,
@@ -145,6 +156,7 @@ export class Realtime {
     return allocations;
   }
   private async allocate(session: SfuSession, memberId: number, local: boolean, publisher?: string): Promise<Allocation[]> {
+    const policies = policiesFor(this.secrets);
     const r = await this.call(`sessions/${session.id}/datachannels/new`, { dataChannels: policies.map(p => ({
       ...p, location: local ? "local" : "remote", ...(publisher ? { sessionId: publisher } : {}),
     })) });

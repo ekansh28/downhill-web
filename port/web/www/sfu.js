@@ -25,7 +25,7 @@
 
 const READY_TIMEOUT_MS = 8000, CONNECT_TIMEOUT_MS = 10000, OPEN_LIMIT_MS = 10000;
 const EARLY_EVENTS = 128, HELD_EVENTS = 512, PROBE_ID = 1023;
-const FRAME_STATE = 5, FRAME_EVENT = 6;
+const FRAME_STATE = 5, FRAME_EVENT = 6, FRAME_VOICE = 7;
 
 export function startSfu(port, say = () => {}) {
   if (typeof RTCPeerConnection !== 'function') return false;
@@ -87,7 +87,7 @@ export function startSfu(port, say = () => {}) {
 
   function open(a) {
     if (closing.has(a.channelId)) { waiting.set(a.channelId, a); return; }
-    const state = a.name === 'state';
+    const state = a.name !== 'events';  // state and state2 (finding 202): unordered, no retransmits
     const dc = pc.createDataChannel(a.name, { negotiated: true, id: a.channelId, ordered: !state, ...(state ? { maxRetransmits: 0 } : {}) });
     dc.binaryType = 'arraybuffer';
     const c = { ...a, dc, at: performance.now() };
@@ -159,20 +159,25 @@ export function startSfu(port, say = () => {}) {
     frame[1] = p.slot;  // the sender's race slot, as the room stamps it on the socket
     port.postMessage({ kind: 'frame', data: frame }, [frame.buffer]);
   }
+  let stateTurn = 0;
   function send(frame) {
     if (!race) return;
+    if (frame[0] === FRAME_VOICE && !released) return;  // voice is never held: it would play late
     if (!released) {  // until the room releases the race: the newest STATE per bundle, every EVENT
       if (frame[0] === FRAME_STATE) heldState.set(frame[3] ?? 0, frame);
       else if (heldEvents.length < HELD_EVENTS) heldEvents.push(frame);
       return;
     }
-    const name = frame[0] === FRAME_STATE ? 'state' : 'events';
-    const c = [...channels.values()].find(x => x.local && x.memberId === me && x.name === name && x.dc.readyState === 'open');
-    if (!c) return;
+    // STATE and voice on this game's STATE channels in turn (two, finding 202); EVENT on events
+    const onState = frame[0] === FRAME_STATE || frame[0] === FRAME_VOICE;
+    const mine = [...channels.values()].filter(x => x.local && x.memberId === me && x.dc.readyState === 'open' &&
+      (onState ? x.name !== 'events' : x.name === 'events')).sort((a, b) => a.channelId - b.channelId);
+    if (!mine.length) return;
+    const c = onState ? mine[stateTurn++ % mine.length] : mine[0];
     // A congested link: snapshots waiting in the channel are stale by the time they'd go, so keep at
     // most a few there (a stall on the live site queued 64 KiB, 5 s of them: riders 13 s late). The
     // newest one is the one worth sending; the next tick's will be newer still.
-    if (name === 'state' && c.dc.bufferedAmount > Math.max(4096, 4 * (frame.length + 8))) return;
+    if (onState && c.dc.bufferedAmount > Math.max(4096, 4 * (frame.length + 8))) return;
     const out = new Uint8Array(8 + frame.length);
     new DataView(out.buffer).setBigUint64(0, BigInt(race.startAt), true);
     out.set(frame, 8);

@@ -443,6 +443,11 @@ fn flush(c: &WsConn, a: &mut Assoc) {
     loop {
         let item = lock(&c.queue).out.pop_front();
         let Some((binary, data)) = item else { break };
+        if binary && data.first() == Some(&7) && !a.relay_room && !a.relay_race && a.start.is_some() {
+            // Voice in an SFU race (finding 202): the racers hear it over the SFU, sooner; the room
+            // gets it too and passes it only to the members watching (room.ts relayVoice).
+            if let Some(rtc) = a.sfu.as_mut() { let _ = rtc.send(&data); }
+        }
         if binary && matches!(data.first(), Some(5 | 6)) && !a.relay_room && !a.relay_race {
             // A full event queue: the association is stuck; a new one replaces it.
             if a.sfu.as_mut().is_some_and(|rtc| rtc.send(&data).is_err()) {

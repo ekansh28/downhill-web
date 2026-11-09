@@ -126,6 +126,8 @@ const FEATURE_NO_SFU = "no_sfu";
 const RELAY_BINARY_PER_WINDOW = 2000;
 /** A voice frame's largest size: its header and one 20 ms Opus packet (voice.c VOICE_PACKET_MAX). */
 const VOICE_MAX_BYTES = 600;
+/** How long a race's start waits for a racer whose WebRTC session is still connecting. */
+const START_SFU_WAIT_MS = 3000;
 
 /** A member's rejoin token (finding 137): 16 random bytes in hex, sent only to that member's game
     in its welcome. Its rejoin hello sends it back and gets the member again; nothing else does. */
@@ -736,8 +738,11 @@ export class Room extends DurableObject<Env> {
     if (slot < 0 || slot >= MAX_MEMBERS) return;
     const b = new Uint8Array(data);
     b[1] = slot;
+    // In an SFU race a racer's voice reaches the other racers over the SFU (sooner, finding 202): the
+    // room passes it only to the members outside the race. A relay race's racers get it here.
+    const sfuRacer = !!st.race && !st.race.relay && st.race.slots.includes(id);
     for (const [member, s] of this.sockets)
-      if (member !== id)
+      if (member !== id && !(sfuRacer && st.race!.slots.includes(member)))
         try {
           s.send(data);
         } catch {}
@@ -1287,6 +1292,15 @@ export class Room extends DurableObject<Env> {
     // Host first, then join order.
     // Members away after a drop (finding 137) don't race: their game isn't here to start.
     const racers = st.members.filter(x => this.sockets.has(x.id) && (!st.session || st.grid?.includes(x.id))).sort((a, b) => Number(b.id === st.hostId) - Number(a.id === st.hostId));
+    // auto (finding 202): a racer whose WebRTC session is still coming up (it offered, it hasn't
+    // failed, it isn't connected yet: a player who just joined) gets up to START_SFU_WAIT_MS before
+    // its race is decided, so one slow connection doesn't send the whole race through this room.
+    if (this.transport() === "auto" && this.sfuOn()) {
+      const connecting = () => racers.filter((x) => !x.noSfu && !x.sfuConnected && x.sfu && x.sfu.phase !== "failed");
+      for (let waited = 0; waited < START_SFU_WAIT_MS && connecting().length; waited += 100)
+        await new Promise((r) => setTimeout(r, 100));
+      if (st !== this.state || st.race) return;
+    }
     const now = Date.now();
     st.race = {
       ...(st.session ? {rules: {...st.gridRules!}, results: racers.map(x => ({id:x.id, name:x.name, rider:x.rider, place:0}))} : {}),
