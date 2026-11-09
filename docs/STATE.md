@@ -312,7 +312,9 @@ Opt-in VU1 diagnostics: `DHD_VU_CAPTURE_FAILURE`, `DHD_VU_CAPTURE_ENTRY`, `DHD_V
   about 40-45 on the title and 55-60 in a race now (finding 145), where the VU worker's VU1
   interpreter (`run_micro`) is the limit; VIF1/VU1 and the GS already have a worker each (090 SP4).
   Deferred vsync and display-refresh pacing were tried and not kept (finding 143): no gain while
-  the VU worker is the limit; pacing to be measured again once the race holds 60.
+  the VU worker is the limit; pacing to be measured again once the race holds 60. VU1 runs
+  entirely in AOT blocks and native kernels already (finding 146: no interpreted pair in a race),
+  so speed now means cheaper blocks, VIF1 unpack or the GPU path (090 OP3).
 - Finding 067's high-rate (120/144) AI and physics equivalence limits.
 
 ## Facts

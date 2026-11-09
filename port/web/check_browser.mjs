@@ -19,6 +19,8 @@ const out = path.resolve(option('--out', path.join(root, 'build/web/browser.png'
 const query = option('--query', '');
 // --profile F S: a CPU profile of the game worker for S seconds from field F (build/web/browser.cpuprofile).
 const profileAt = Number(option('--profile', 0)), profileFor = Number(args[args.indexOf('--profile') + 2] || 20);
+// --profile-worker NAME: profile the worker whose script URL contains NAME (e.g. vu.js) instead.
+const profileWorker = option('--profile-worker', null);
 const chrome = option('--chrome', 'C:/Program Files/Google/Chrome/Application/chrome.exe');
 const profile = path.resolve(option('--user-data', path.join(root, 'build/web/chrome-profile')));
 const thenQuery = option('--then-query', null), thenField = Number(option('--then-field', field));
@@ -34,7 +36,11 @@ await send('Page.enable', {}, sessionId); await send('Runtime.enable', {}, sessi
 let workerSession = null;
 if (profileAt) {
   ws.addEventListener('message', e => { const m = JSON.parse(e.data);
-    if (m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'worker') workerSession = m.params.sessionId; });
+    // the game worker starts the VU and GS workers: attach to its workers too
+    if (profileWorker && m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'worker')
+      send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, m.params.sessionId);
+    if (m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'worker' &&
+        (!profileWorker || m.params.targetInfo.url.includes(profileWorker))) workerSession = m.params.sessionId; });
   await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
 }
 let profiled = false;
