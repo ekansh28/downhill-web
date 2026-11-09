@@ -415,6 +415,13 @@ async function warmDisc(base) {
     if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
   } catch { /* nothing to warm: the game streams as before */ }
 }
+// The GPU WebGPU gives this page. Chrome and Edge on Windows hand out the GPU Windows set for the
+// browser, whatever the renderer asks (high-performance): on a laptop that is often the integrated
+// Intel one, about 40% slower in a race than its NVIDIA card here. Then a tip says how to switch.
+navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' }).then(a => {
+  if (a?.info?.vendor === 'intel') $('gpuTip').hidden = false;
+}).catch(() => {});
+
 // Dev notes (notes.json: [{ date, title, items: [...] }], newest first), on the start page.
 fetch('notes.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : Promise.reject(Error(r.status))).then(notes => {
   const box = $('notes');

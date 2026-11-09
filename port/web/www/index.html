@@ -53,6 +53,8 @@
   #hosted[hidden], #hostedNote[hidden] { display: none; }
   fieldset { display: flex; flex-direction: column; gap: 8px; }
   .disc-state { color: #000080; }
+  .gpu-tip { margin: 0; padding: 6px 8px; background: #ffffe1; border: 1px solid #000; }
+  .gpu-tip[hidden] { display: none; }
   .import { cursor: pointer; text-decoration: underline; color: #000080; align-self: flex-start; }
   .card .status-bar { margin: 0; }
   .invite-float { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 7; font-weight: bold; }
@@ -139,6 +141,10 @@
         <input type="file" id="iso" accept=".iso,.bin,.img">
         <button id="start" disabled>Start</button>
       </fieldset>
+      <!-- main.js: shown when WebGPU runs on Intel graphics (a laptop's other GPU is often much faster) -->
+      <p class="gpu-tip" id="gpuTip" hidden><b>Faster on a gaming laptop:</b> this browser draws the game on Intel graphics.
+        If this PC also has an NVIDIA or AMD card, open Windows Settings &gt; System &gt; Display &gt; Graphics, pick your
+        browser, choose <b>High performance</b>, and restart the browser.</p>
       <label class="note import" id="importLabel">Import saves from a file<input type="file" id="importSaves" accept=".json" hidden></label>
     </div>
     <div class="status-bar">

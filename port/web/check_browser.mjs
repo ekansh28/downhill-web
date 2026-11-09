@@ -27,7 +27,8 @@ const thenQuery = option('--then-query', null), thenField = Number(option('--the
 const server = spawn(process.execPath, [path.join(root, 'port/web/serve.mjs'), '--port', String(port), '--iso', iso], { stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise(r => server.stdout.once('data', r));
 const { browser, wsUrl } = await startChrome({ chrome, profile,
-  flags: ['--enable-unsafe-webgpu', '--autoplay-policy=no-user-gesture-required', '--window-size=1400,1150'] });
+  flags: ['--enable-unsafe-webgpu', '--autoplay-policy=no-user-gesture-required', '--window-size=1400,1150',
+    ...(process.env.CHROME_FLAGS || '').split(' ').filter(Boolean)] });  // e.g. --force_high_performance_gpu (a laptop's fast GPU)
 console.error(`server pid ${server.pid}, chrome pid ${browser.pid}`);
 const { ws, send, evaluate: evaluateIn, events } = await connect(wsUrl);
 const { result: { targetId } } = await send('Target.createTarget', { url: 'about:blank' });

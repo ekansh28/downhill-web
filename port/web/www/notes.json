@@ -1,6 +1,14 @@
 [
   {
     "date": "2026-11-09",
+    "title": "Smoother races on gaming laptops",
+    "items": [
+      "Chrome and Edge often draw the game on a laptop's Intel graphics instead of its NVIDIA or AMD card. On our test laptop the NVIDIA card makes the busiest race moments about 65% faster (55 fps instead of 33).",
+      "The start page now tells you when the game is on Intel graphics, and how to switch: Windows Settings > System > Display > Graphics > your browser > High performance, then restart the browser."
+    ]
+  },
+  {
+    "date": "2026-11-09",
     "title": "Online races over WebRTC",
     "items": [
       "Browser players now race through Cloudflare's network directly: other riders show about 6x sooner than before (around 60 ms instead of 350 ms).",
