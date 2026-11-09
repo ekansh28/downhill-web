@@ -290,12 +290,23 @@ static void interpolate(const Puppet *p, double t, Snapshot *out)
     }
 }
 
-/* The snapshot carried forward from its moment to t (at most PREDICT_MAX_MS): position along the
+/* How far a puppet's snapshot may be carried forward (finding 202): PREDICT_MAX_MS, or for a sender
+   whose snapshots usually arrive older than that (a race through the room, a far link) its usual
+   age plus a frame's margin, at most PREDICT_LATE_MAX_MS: else the rider is drawn behind by the
+   difference and a racer ahead looks behind. Corrections still fade in (smooth). */
+enum { PREDICT_LATE_MAX_MS = 600 };
+static double predict_limit(const Puppet *p)
+{
+    double usual = p && p->have_age ? p->age + 0.05 : 0;
+    return fmin(PREDICT_LATE_MAX_MS / 1000.0, fmax(PREDICT_MAX_MS / 1000.0, usual));
+}
+
+/* The snapshot carried forward from its moment to t (at most predict_limit): position along the
    velocity, orientation by the angular velocity (puppet_predict.h). */
-static void carry(const Snapshot *from, double t, Snapshot *out)
+static void carry(const Puppet *p, const Snapshot *from, double t, Snapshot *out)
 {
     PuppetPose pose;
-    double h = fmin(fmax(0, t - from->time), PREDICT_MAX_MS / 1000.0);
+    double h = fmin(fmax(0, t - from->time), predict_limit(p));
     *out = *from;
     predict_pose(from->pos, from->rot, from->vel, from->spin, (float)h, &pose);
     memcpy(out->pos, pose.pos, sizeof pose.pos);
@@ -311,7 +322,7 @@ static int wanted(int slot, Snapshot *out)
     Puppet *p = &pp.p[slot];
     if (!p->count) return 0;
     const Snapshot *newest = &p->ring[p->count - 1];
-    if (pp.predict && RACE_TIME >= newest->time) carry(newest, RACE_TIME, out);
+    if (pp.predict && RACE_TIME >= newest->time) carry(p, newest, RACE_TIME, out);
     else interpolate(p, pp.predict ? RACE_TIME : RACE_TIME - puppet_delay(p), out);
     return 1;
 }
@@ -332,7 +343,7 @@ static void smooth(Puppet *p, Snapshot *s)
         correction_clear(&p->fix);
     else if (newest->time != p->basis.time) {
         Snapshot before;
-        carry(&p->basis, now, &before);
+        carry(p, &p->basis, now, &before);
         memcpy(old.pos, before.pos, sizeof old.pos);
         memcpy(old.rot, before.rot, sizeof old.rot);
         correction_apply(&p->fix, &old, &was);
