@@ -168,7 +168,8 @@ rebinding gave way to upstream's 137/175 and 157):
   Voice Range. Windows and the browser.
 - Text chat (finding 191): the room's `chat` message (the server says `"chat": true` in its
   welcome) and `EVENT_CHAT` in a race; the race room's chat, Y in a race, the pause menu's
-  quick lines.
+  quick lines. The room chat notes who joins and leaves; the room's player list shows TALKING;
+  the race feed says knockouts, finishes with their place, drops and rejoins (finding 204).
 - Stay ready when the host changes the track (`keep_ready`, finding 184); join links and
   `dhd://join/CODE` (finding 181); Discord's Ask to Join (finding 188); rider names on the track
   bar (finding 182); time-trial boards and ghosts on the server (finding 180).

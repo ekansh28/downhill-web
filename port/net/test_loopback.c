@@ -293,13 +293,23 @@ static DWORD WINAPI game(void *arg)
 
 /* Chat in the room: a line from each player reaches everyone in order, the sender too; a line is
    trimmed, and cut to NET_CHAT_MAX bytes between UTF-8 characters; the sixth line in a row is
-   refused (slow_down), which only its sender sees, as a note in its own chat. */
+   refused (slow_down), which only its sender sees, as a note in its own chat. Before it, each
+   player's chat holds a JOINED THE ROOM note for each player its first room message didn't list
+   (finding 204): the players' hellos reach the server in no fixed order. */
 static void chat(void)
 {
     char line[200], want[16];
     NetChat ch;
     double until;
+    unsigned base[PLAYERS];
     int i, k;
+    for (i = 0; i < PLAYERS; i++) {
+        client_get_chat(&players[i].client, &ch);
+        base[i] = ch.seq;
+        CHECK(ch.seq == (unsigned)ch.count && ch.count < PLAYERS);
+        for (k = 0; k < ch.count; k++)
+            CHECK(ch.line[k].member_id == NET_CHAT_ROOM && strstr(ch.line[k].text, "JOINED THE ROOM"));
+    }
     CHECK(!client_chat(&players[0].client, "  \t "));
     for (i = 0; i < PLAYERS; i++) {
         snprintf(line, sizeof line, "  hi from P%d\t ", i);
@@ -315,19 +325,19 @@ static void chat(void)
     do {
         Sleep(10);
         client_get_chat(&players[3].client, &ch);
-    } while (ch.seq < 9 && net_now_ms() < until);
+    } while (ch.seq < base[3] + 9 && net_now_ms() < until);
     for (i = 0; i < PLAYERS; i++) {
         client_get_chat(&players[i].client, &ch);
-        CHECK(ch.seq == (i == 2 ? 10u : 9u) && ch.count == NET_CHAT_LINES);
+        CHECK(ch.seq == base[i] + (i == 2 ? 10u : 9u) && ch.count == NET_CHAT_LINES);
         /* the oldest line went: the ring has lines 2..9 (player 2: 3..9 and its note) */
         if (i == 2) {
-            CHECK(ch.line[NET_CHAT_LINES - 1].member_id == -1 && strstr(ch.line[NET_CHAT_LINES - 1].text, "wait"));
+            CHECK(ch.line[NET_CHAT_LINES - 1].member_id == NET_CHAT_NOTE && strstr(ch.line[NET_CHAT_LINES - 1].text, "wait"));
             continue;
         }
         for (k = 0; k < 3; k++) {  /* lines 2..4: players 1-3's hellos */
             snprintf(want, sizeof want, "hi from P%d", k + 1);
             CHECK(!strcmp(ch.line[k].text, want) && ch.line[k].member_id == players[k + 1].member);
-            CHECK(ch.line[k].seq == (unsigned)k + 2 && !strcmp(ch.line[k].name, ch.line[k].text + 8));
+            CHECK(ch.line[k].seq == base[i] + (unsigned)k + 2 && !strcmp(ch.line[k].name, ch.line[k].text + 8));
         }
         CHECK(strlen(ch.line[3].text) == 119 && ch.line[3].text[118] == 'x');
         CHECK(!strcmp(ch.line[4].text, "gg") && ch.line[4].at == 1002);

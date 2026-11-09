@@ -88,6 +88,10 @@ typedef struct {
     uint16_t relayed_size[NET_RELAY_QUEUE];
     unsigned relayed_head, relayed_count;
     NetChat chat;  /* the last lines said (net.h) */
+    /* The room's members as the last room message listed them, for the chat's JOINED / LEFT notes
+       (finding 204); members_known 0 until the first room message of this room. */
+    int members_known, nmembers_seen, member_seen_id[NET_MAX_SLOTS];
+    char member_seen_name[NET_MAX_SLOTS][NET_CHAT_NAME];
 } NetClient;
 
 double net_now_ms(void);  /* a monotonic clock */

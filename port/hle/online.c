@@ -34,6 +34,7 @@
 #include "../include/fps.h"
 #include "voice_rules.h"
 #include "state_bundle.h"
+#include "online_feed.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -1084,6 +1085,11 @@ static const char *rider_label(int global, char *out, int size)
     return out;
 }
 
+static void race_feed(const char *text);
+static const char *feed_name(int global);
+
+/* A rider's finish, this PC's or one another PC reported, once. A player's says so in the race
+   feed with its place among the times known here (the order the host's results take). */
 static void read_finish(int global, int time)
 {
     char name[48];
@@ -1092,6 +1098,13 @@ static void read_finish(int global, int time)
     if (global < on.nslots && !on.first_finish) on.first_finish = host_wall_seconds();
     fprintf(stderr, "online: %s finished in %d:%05.2f\n", rider_label(global, name, sizeof name), time / 3600,
             time % 3600 / 60.0);
+    if (global < on.nslots) {
+        char place[16], line[64];
+        feed_ordinal(place, sizeof place, feed_place(on.finish, NRIDERS, global));
+        if (global == on.local_slot) snprintf(line, sizeof line, "YOU FINISHED %s", place);
+        else snprintf(line, sizeof line, "%s FINISHED %s", feed_name(global), place);
+        race_feed(line);
+    }
 }
 
 /* The host's final order: a count, then each rider (global id) and finish time (-1: not finished),
@@ -1322,14 +1335,44 @@ static void watch_step(const NetLobby *lobby)
    the host; it runs the AI riders), unless they had finished: then it stays where it is, finished
    (hle_puppet_drop). If this PC lost the connection, it runs every rider itself. */
 /* the race feed (below, after the race chat it shows among): its state, and a line of it */
-static struct { int crashing[NRIDERS], started, offline_said; } feed;
+/* away: by lobby slot, whether the room measures the player's round trip (0 not yet, 1 it does, 2
+   not any more: its room connection dropped; feed_rejoins) */
+static struct { int crashing[NRIDERS], started, offline_said, away[NET_MAX_SLOTS]; } feed;
 enum { FEED_MEMBER = -2 };  /* a race chat line of the feed (race_chat_add) */
-static void race_feed(const char *text);
+
+/* A racer whose room connection dropped and came back (findings 137, 175). Its rider raced on
+   over the SFU meanwhile, so its snapshots needn't stop; what the room shows is its round trip:
+   the server forgets it when the connection drops (room.ts: the member is away, its rtts gone)
+   and measures it again from the first pings after the rejoin. "NAME REJOINED" then, once each
+   time. Session rooms only: elsewhere a drop is a leave (check_left). */
+static void feed_rejoins(const NetLobby *lobby)
+{
+    if (!feed.started || lobby->offline) return;
+    for (int j = 0; j < on.nslots && j < NET_MAX_SLOTS; j++) {
+        if (j == on.local_slot || on.gone[j] || lobby->racer[j].left) {
+            feed.away[j] = 0;
+            continue;
+        }
+        const NetMember *m = NULL;
+        for (int i = 0; i < lobby->nmembers; i++)
+            if (lobby->member[i].id == lobby->racer[j].member_id) m = &lobby->member[i];
+        if (!m) continue;
+        if (m->rtt_ms >= 0) {
+            if (feed.away[j] == 2) {
+                char line[64];
+                snprintf(line, sizeof line, "%s REJOINED", feed_name(j));
+                race_feed(line);
+            }
+            feed.away[j] = 1;
+        } else if (feed.away[j] == 1) feed.away[j] = 2;
+    }
+}
 
 static void check_left(void)
 {
     NetLobby lobby;
     host_service_net_get_lobby(GADDR(&lobby));
+    feed_rejoins(&lobby);
     for (int j = 0; j < on.nslots; j++) {
         int gone = j != on.local_slot && (lobby.racer[j].left || lobby.offline);
         if (!gone || on.gone[j]) continue;
@@ -1700,7 +1743,7 @@ static void race_chat_step(void)
         host_service_net_get_lobby(GADDR(&lobby));
         for (int i = 0; i < lines.count; i++) {
             const NetChatLine *line = &lines.line[i];
-            if (line->seq <= race_chat.seen) continue;
+            if (line->seq <= race_chat.seen || line->member_id == NET_CHAT_ROOM) continue;  /* the room's own */
             memmove(race_chat.shown, race_chat.shown + 1, sizeof race_chat.shown[0] * (RACE_CHAT_SHOWN - 1));
             char shown[NET_CHAT_NAME + NET_CHAT_TEXT + 4];
             port_chat_show(shown, sizeof shown, line->name, line->text, line->member_id);

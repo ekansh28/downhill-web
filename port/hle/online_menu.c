@@ -11,6 +11,7 @@
 #include "settings_table.h"  /* the rider name's rule (dhd_settings, port/render/settings) */
 #include "../net/net.h"
 #include "../net/lobby_row.h"
+#include "online_feed.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -755,7 +756,7 @@ enum { TOASTS = 3, TRACK_COLUMNS = 2 };
 enum { L_X = 48, L_W = 166, TOP = 40, CARD_X = 224, CARD_W = 368, CARD_Y = 52, CARD_H = 11, CARD_GAP = 0,
        MID_H = 117, BAR_Y = 164, BAR_H = 18, BAR_X = 48, BAR_W = 544, STATUS_Y = 189, TITLE_Y = 14 };
 static const int green[3] = {0x30, 0x80, 0x28}, amber[3] = {0x80, 0x60, 0x10}, red[3] = {0x80, 0x30, 0x30},
-                 blue[3] = {0x38, 0x60, 0x98}, lilac[3] = {0x70, 0x68, 0x98};
+                 blue[3] = {0x38, 0x60, 0x98}, lilac[3] = {0x70, 0x68, 0x98}, teal[3] = {0x28, 0x80, 0x78};
 
 typedef struct { short x, y, w, h; } Hit;
 static NetLobby room;                       /* this frame's snapshot */
@@ -894,9 +895,8 @@ static void race_time(char *out, int size, long long ticks)
 
 static const char *ordinal(int place)
 {
-    static char text[8];
-    snprintf(text, sizeof text, "%d%s", place, place % 100 / 10 == 1 ? "TH" : place % 10 == 1 ? "ST" : place % 10 == 2 ? "ND"
-             : place % 10 == 3 ? "RD" : "TH");
+    static char text[16];
+    feed_ordinal(text, sizeof text, place);
     return text;
 }
 
@@ -1060,7 +1060,9 @@ static void chat_update(void)
     if (!chat_seen_valid) chat_seen = chat.seq, chat_seen_valid = 1;  /* said before this page opened */
     for (int i = 0; i < chat.count; i++) {
         const NetChatLine *line = &chat.line[i];
-        if (line->seq <= chat_seen || chat_open || line->member_id == room.member_id) continue;
+        /* the client's JOINED / LEFT THE ROOM notes: room_changes says those already */
+        if (line->seq <= chat_seen || chat_open || line->member_id == room.member_id || line->member_id == NET_CHAT_ROOM)
+            continue;
         char shown[48];
         port_chat_show(shown, sizeof shown, line->name, line->text, line->member_id);
         note(shown, line->member_id < 0 ? red : NULL);
@@ -1408,6 +1410,66 @@ static void draw_bars(int x, int y, int rtt)
     }
 }
 
+/* ---- who is talking (finding 204) ----
+   The server stamps a voice frame with the sender's voice slot (room.ts relayVoice): with no race
+   (the room snapshot's started, a session room's phase "racing"), the member's index in the
+   member list; in a race, its race slot, and the members not racing after the racers. The race's
+   slots (member ids, host first) are not in the room snapshot: this PC knows them from the race's
+   start message when it raced in it, or works them out from the first snapshot of the race it
+   watched begin (the members in it, the host first, then in list order, as room.ts startRace
+   orders them). A race this page did not see begin (the page opened during it): unknown, no
+   member shows as talking. */
+static struct {
+    double race;       /* the race the slots are for (its raceStartedAt), 0 none */
+    double idle_at;    /* the last frame without a race */
+    int known, n, id[NET_MAX_SLOTS];
+} talk;
+
+static int room_race_running(const NetLobby *l) { return l->phase[0] ? !strcmp(l->phase, "racing") : l->started; }
+
+static void talk_update(void)
+{
+    const NetLobby *l = &room;
+    double now = host_seconds();
+    if (!room_race_running(l)) {
+        talk.race = 0, talk.known = 0, talk.idle_at = now;
+        return;
+    }
+    if (talk.race && talk.race == l->race_started_at) return;
+    talk.race = l->race_started_at, talk.known = 0, talk.n = 0;
+    if (!talk.race) return;  /* a room without sessions: no race id to hold the slots to */
+    const NetMember *self = NULL;
+    for (int i = 0; i < l->nmembers; i++)
+        if (l->member[i].id == l->member_id) self = &l->member[i];
+    if (self && self->race_state[0] && l->nslots > 0) {  /* raced in it: the start message's slots */
+        for (int s = 0; s < l->nslots && s < NET_MAX_SLOTS; s++) {
+            if (!l->racer[s].name[0]) return;
+            talk.id[talk.n++] = l->racer[s].member_id;
+        }
+        talk.known = 1;
+    } else if (now - talk.idle_at < 2.0) {  /* watched it begin */
+        for (int host = 1; host >= 0; host--)
+            for (int i = 0; i < l->nmembers; i++) {
+                const NetMember *m = &l->member[i];
+                if ((m->in_race || m->race_state[0]) && (m->id == l->host_id) == host) talk.id[talk.n++] = m->id;
+            }
+        talk.known = 1;
+    }
+}
+
+/* Member i spoke in the last 300 ms (voice.c); this player: its microphone is sending now. */
+static int member_talking(int i)
+{
+    const NetLobby *l = &room;
+    if (l->member[i].id == l->member_id) return host_service_voice_state(VOICE_STATE_TRANSMITTING, 0) > 0;
+    int ids[NET_MAX_SLOTS];
+    for (int k = 0; k < l->nmembers; k++) ids[k] = l->member[k].id;
+    int racing = room_race_running(l);
+    if (racing && !talk.known) return 0;
+    int slot = feed_voice_slot(l->member[i].id, ids, l->nmembers, talk.id, racing ? talk.n : -1);
+    return slot >= 0 && slot < NET_MAX_SLOTS && host_service_voice_state(VOICE_STATE_TALKING, slot) > 0;
+}
+
 static void draw_card(int i)
 {
     const NetLobby *l = &room;
@@ -1436,6 +1498,9 @@ static void draw_card(int i)
     MenuStyle name_style = menu_style(st_row, pct, -1, 0, 0);
     while (pct > 60 && menu_text_width(sized, &name_style) > X(112)) pct -= 5, name_style = menu_style(st_row, pct, -1, 0, 0);
     rect(x, y + 1, 2, 18, m->ready ? green : amber, 128);
+    /* talking: the card lit in teal, TALKING in the state's place (the stripe keeps READY's colour) */
+    int talking = member_talking(i);
+    if (talking) rect(x + 2, y + 1, w - 2, 18, teal, 40);
     put(MENU_LEFT, x + 5, y + 2, line, name_style);
     int tag_x = x + 5 + menu_text_width(line, &name_style) * 640 / vw + 4;
     if (is_host) {
@@ -1444,7 +1509,8 @@ static void draw_card(int i)
         tag_x += menu_text_width("HOST", &host_style) * 640 / vw + 4;
     }
     if (is_you) put(MENU_LEFT, tag_x, y + 2, "YOU", menu_style(st_row, pct, 0x80, 0x20, 0x20));  /* red */
-    put(MENU_RIGHT, x + w - 5, y + 2, tag, menu_style(st_on, 70, -1, 0, 0));
+    if (talking) put(MENU_RIGHT, x + w - 5, y + 2, "TALKING", tint(st_row, 70, teal));
+    else put(MENU_RIGHT, x + w - 5, y + 2, tag, menu_style(st_on, 70, -1, 0, 0));
     detail[0] = 0;
     if (now.racing && !strcmp(m->race_state, "finished")) {
         race_time(line, sizeof line, m->finish_ticks);
@@ -1758,7 +1824,8 @@ static void draw_chat(void)
     if (!n) put(MENU_CENTRE, 320, 90, "NOTHING SAID YET: SAY HELLO", menu_style(st_off, 85, -1, 0, 0));
     for (int i = 0; i < n; i++) {
         int m = row_member[i];
-        MenuStyle rs = m < 0 ? tint(st_row, 80, red) : m == l->member_id ? menu_style(st_on, 80, -1, 0, 0) : s;
+        MenuStyle rs = m == NET_CHAT_ROOM ? tint(st_row, 80, lilac) : m < 0 ? tint(st_row, 80, red)
+                       : m == l->member_id ? menu_style(st_on, 80, -1, 0, 0) : s;
         put(MENU_LEFT, 52, 44 + (CHAT_ROWS - n + i) * 11, rows[i], rs);
     }
     /* the line being typed: a long one shows its end */
@@ -1991,6 +2058,7 @@ static void room_update(MenuPage *p)
         room_options = l->laps, public_room = l->is_public;
     }
     room_news();
+    talk_update();
     room_countdown_sounds();
     chat_update();
     room_input(p, &r);
