@@ -169,7 +169,10 @@ export function startSfu(port, say = () => {}) {
     const name = frame[0] === FRAME_STATE ? 'state' : 'events';
     const c = [...channels.values()].find(x => x.local && x.memberId === me && x.name === name && x.dc.readyState === 'open');
     if (!c) return;
-    if (name === 'state' && c.dc.bufferedAmount > 64 << 10) return;  // a congested link: this snapshot is superseded anyway
+    // A congested link: snapshots waiting in the channel are stale by the time they'd go, so keep at
+    // most a few there (a stall on the live site queued 64 KiB, 5 s of them: riders 13 s late). The
+    // newest one is the one worth sending; the next tick's will be newer still.
+    if (name === 'state' && c.dc.bufferedAmount > Math.max(4096, 4 * (frame.length + 8))) return;
     const out = new Uint8Array(8 + frame.length);
     new DataView(out.buffer).setBigUint64(0, BigInt(race.startAt), true);
     out.set(frame, 8);

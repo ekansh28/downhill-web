@@ -56,6 +56,22 @@ Slots right both ways; every frame came over the SFU. The relay path still passe
 (`check_net.mjs`, whose Node clients have no WebRTC, now against a server with Realtime: a relay
 race), and the client's C tests.
 
+### On the live site (2026-11-09, deployed, `check_sfu.mjs wss://<site> 20 [relay]`)
+
+The same check against the deployed Worker, WebRTC against the room's WebSocket relay (`relay`:
+both players say `no_sfu`), run back to back:
+
+| transport | delay p50 | p95 | longest gap | delivered |
+|---|---|---|---|---|
+| relay (room WebSocket) | 337-347 ms | 519-530 ms | 393-603 ms | 1200/1200 |
+| SFU | 53-62 ms | 172-766 ms | 1,052-1,088 ms | 1196-1200/1200 |
+
+The first live SFU runs, in a stretch where this line dropped packets, queued up to 64 KiB of
+STATE in the channel (5 s of snapshots): riders came 13 s late and most were lost. A snapshot
+waiting is stale, so `send` now keeps at most four in the channel (`bufferedAmount`); after that
+every live run held as above. Each SFU run still has one to three gaps of about 1.05 s: finding
+173's timer, below.
+
 ## What is left
 
 - Finding 173's stall can't be fixed in a browser: Cloudflare forwards a subscriber's channels

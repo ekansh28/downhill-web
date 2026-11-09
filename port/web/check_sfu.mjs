@@ -9,11 +9,13 @@ import { readFileSync } from 'node:fs';
 import { runPage } from './cdp.mjs';
 
 const server = process.argv[2] || 'ws://127.0.0.1:8787', SECONDS = Number(process.argv[3] || 3);
+// relay: the same race with both players saying no_sfu, over the room WebSocket (finding 199), to compare
+const RELAY = process.argv[4] === 'relay';
 const sfuJs = readFileSync(new URL('./www/sfu.js', import.meta.url));
 
 const page = `<!doctype html><meta charset="utf-8"><script type="module">
 import { startSfu } from './sfu.js';
-const SERVER = ${JSON.stringify(server)}, TICKS = ${Math.round(SECONDS * 60)};
+const SERVER = ${JSON.stringify(server)}, TICKS = ${Math.round(SECONDS * 60)}, RELAY = ${RELAY};
 const log = [];
 const say = t => log.push(t);
 const SIGNAL = /^\\{"type":"(welcome|start|ended|error|sfu_[a-z_]+)"/;
@@ -28,7 +30,7 @@ function player(name, path) {
   const ws = new WebSocket(SERVER + path); ws.binaryType = 'arraybuffer';
   p.ws = ws;
   ws.onmessage = e => {
-    if (typeof e.data !== 'string') { p.got.push({ via: 'socket', frame: new Uint8Array(e.data) }); return; }
+    if (typeof e.data !== 'string') { p.got.push({ via: 'socket', frame: new Uint8Array(e.data), at: performance.now() }); return; }
     const m = JSON.parse(e.data);
     if (m.type === 'ping') { ws.send(JSON.stringify({ type: 'pong', s: m.s })); return; }
     p.texts.push(m);
@@ -44,7 +46,7 @@ function player(name, path) {
     else if (s.kind === 'frame') p.got.push({ via: 'sfu', frame: new Uint8Array(s.data), at: performance.now() }); };
   p.sendFrame = bytes => { if (p.route) ch.port2.postMessage({ kind: 'frame', data: bytes.buffer }, [bytes.buffer]); else ws.send(bytes); };
   ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 4, version: 'dhd-port sfu-check', clientVersion: '0.7.13',
-    isoSha256: 'a'.repeat(64), name, features: ['race_rejoin'] }));
+    isoSha256: 'a'.repeat(64), name, features: RELAY ? ['race_rejoin', 'no_sfu'] : ['race_rejoin'] }));
   return p;
 }
 
@@ -53,16 +55,16 @@ window.result = (async () => {
   await wait('host welcome', () => host.welcome);
   const guest = player('GUEST', '/v1/rooms/' + host.welcome.code);
   await wait('guest welcome', () => guest.welcome);
-  if (host.welcome.sfu === 'off') throw Error('the server has no Realtime (sfu off): put REALTIME_APP_ID/TOKEN in .dev.vars');
+  if (!RELAY && host.welcome.sfu === 'off') throw Error('the server has no Realtime (sfu off): put REALTIME_APP_ID/TOKEN in .dev.vars');
   // both sessions up: the room published their channels (sfu_channels with local ones)
-  await wait('sessions connected', () => [host, guest].every(p => p.texts.some(m => m.type === 'sfu_channels')), 30000);
+  if (!RELAY) await wait('sessions connected', () => [host, guest].every(p => p.texts.some(m => m.type === 'sfu_channels')), 30000);
   for (const p of [host, guest]) p.ws.send(JSON.stringify({ type: 'ready', ready: true }));
   await new Promise(r => setTimeout(r, 500));
   host.ws.send(JSON.stringify({ type: 'start' }));
   await wait('start', () => host.start && guest.start);
   const transport = host.start.transport;
   const t0 = performance.now();
-  await wait('release (sfu_ready)', () => host.released && guest.released, 30000);
+  if (!RELAY) await wait('release (sfu_ready)', () => host.released && guest.released, 30000);
   const releaseMs = performance.now() - t0;
   // 3 s of STATE at 60 a second each way, the counter in bytes 4-5; and 5 EVENTs each way
   for (let i = 0; i < TICKS; i++) {
@@ -101,7 +103,8 @@ await runPage((req, res) => {
   const r = await evaluate('window.result', { awaitPromise: true });
   console.log(JSON.stringify(r, null, 1));
   if (!r || r.error) { console.log('FAIL', r?.error); return 1; }
-  const ok = r.transport === 'sfu' && r.host.via.includes('sfu') && r.guest.via.includes('sfu') &&
+  const via = RELAY ? 'socket' : 'sfu';
+  const ok = r.transport === (RELAY ? 'relay' : 'sfu') && r.host.via.includes(via) && r.guest.via.includes(via) &&
     r.host.states > SECONDS * 50 && r.guest.states > SECONDS * 50 && r.host.events === 5 && r.guest.events === 5 &&
     r.host.slots.length === 1 && r.host.slots[0] === r.guestSlot && r.guest.slots[0] === r.hostSlot;
   console.log(ok ? 'PASS' : 'FAIL');
