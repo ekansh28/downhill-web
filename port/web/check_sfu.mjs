@@ -1,5 +1,7 @@
 // The browser's WebRTC transport (www/sfu.js, finding 200) against the real Cloudflare Realtime SFU:
-//   node port/web/check_sfu.mjs [ws://127.0.0.1:8787]
+//   node port/web/check_sfu.mjs [ws://127.0.0.1:8787] [seconds] [relay|turn]
+// `turn` (finding 205) removes the direct path, so each game must get TURN over TLS from the room: it needs
+// TURN_KEY_ID and TURN_KEY_API_TOKEN in .dev.vars too, and passes only if the race ran on the SFU through them.
 // The server is online/server under `wrangler dev`, with REALTIME_APP_ID and REALTIME_APP_TOKEN in
 // its .dev.vars (gitignored; never committed). Headless Chrome or Edge (CHROME) opens a page where
 // two players each run sfu.js with a stand-in for the net worker (the room WebSocket, the signalling
@@ -10,12 +12,12 @@ import { runPage } from './cdp.mjs';
 
 const server = process.argv[2] || 'ws://127.0.0.1:8787', SECONDS = Number(process.argv[3] || 3);
 // relay: the same race with both players saying no_sfu, over the room WebSocket (finding 199), to compare
-const RELAY = process.argv[4] === 'relay', TICKS_ALL = Math.round(SECONDS * 60);
+const RELAY = process.argv[4] === 'relay', TURN = process.argv[4] === 'turn', TICKS_ALL = Math.round(SECONDS * 60);
 const sfuJs = readFileSync(new URL('./www/sfu.js', import.meta.url));
 
 const page = `<!doctype html><meta charset="utf-8"><script type="module">
 import { startSfu } from './sfu.js';
-const SERVER = ${JSON.stringify(server)}, TICKS = ${Math.round(SECONDS * 60)}, RELAY = ${RELAY};
+const SERVER = ${JSON.stringify(server)}, TICKS = ${Math.round(SECONDS * 60)}, RELAY = ${RELAY}, TURN = ${TURN};
 const log = [];
 const say = t => log.push(t);
 const SIGNAL = /^\\{"type":"(welcome|start|ended|error|sfu_[a-z_]+)"/;
@@ -26,7 +28,7 @@ const wait = (what, test, ms = 30000) => new Promise((ok, fail) => {
 function player(name, path) {
   const p = { name, texts: [], got: [], released: false, start: null, welcome: null, route: false };
   const ch = new MessageChannel();
-  if (!startSfu(ch.port1, t => say(name + ': ' + t))) throw Error('no RTCPeerConnection');
+  if (!startSfu(ch.port1, t => say(name + ': ' + t), { forceTurn: TURN })) throw Error('no RTCPeerConnection');
   const ws = new WebSocket(SERVER + path); ws.binaryType = 'arraybuffer';
   p.ws = ws;
   ws.onmessage = e => {
@@ -57,7 +59,7 @@ window.result = (async () => {
   await wait('guest welcome', () => guest.welcome);
   if (!RELAY && host.welcome.sfu === 'off') throw Error('the server has no Realtime (sfu off): put REALTIME_APP_ID/TOKEN in .dev.vars');
   // both sessions up: the room published their channels (sfu_channels with local ones)
-  if (!RELAY) await wait('sessions connected', () => [host, guest].every(p => p.texts.some(m => m.type === 'sfu_channels')), 30000);
+  if (!RELAY) await wait('sessions connected' + (TURN ? ' (through TURN: is the TURN key in .dev.vars?)' : ''), () => [host, guest].every(p => p.texts.some(m => m.type === 'sfu_channels')), 30000);
   for (const p of [host, guest]) p.ws.send(JSON.stringify({ type: 'ready', ready: true }));
   await new Promise(r => setTimeout(r, 500));
   host.ws.send(JSON.stringify({ type: 'start' }));

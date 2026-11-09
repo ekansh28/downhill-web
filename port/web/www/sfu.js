@@ -22,13 +22,24 @@
 // 173); the browser's SCTP can't be patched as the native game's is, so a lost chunk may hold later
 // snapshots until Cloudflare resends it. The game takes the newest snapshot it has, so a late one
 // is harmless, but a stall shows as a frozen rider for that moment.
+//
+// TURN over TLS (finding 205), for networks that block UDP: players who connect directly never see
+// it. A session not connected TURN_AFTER_MS after its answer asks the room for TURN credentials
+// ({"type":"sfu_turn"}, the room's own reply to this game only, once per session, none when the
+// deployment has no TURN key). A browser can't add a relay to a session already answered, so it
+// builds a new RTCPeerConnection with those TURN servers, iceTransportPolicy 'relay', and offers
+// anew with "turn":true, which tells the room to keep this game's credentials for that session.
+// A failed relay session falls back to a plain direct offer (and one more ask).
 
-const READY_TIMEOUT_MS = 8000, CONNECT_TIMEOUT_MS = 10000, OPEN_LIMIT_MS = 10000;
+const TURN_AFTER_MS = 2000, READY_TIMEOUT_MS = 8000, CONNECT_TIMEOUT_MS = 10000, OPEN_LIMIT_MS = 10000;
 const EARLY_EVENTS = 128, HELD_EVENTS = 512, PROBE_ID = 1023;
 const FRAME_STATE = 5, FRAME_EVENT = 6, FRAME_VOICE = 7;
 
-export function startSfu(port, say = () => {}) {
+// options.forceTurn (check_sfu.mjs): the first session of each offer has no direct path (relay policy, no
+// servers), as on a network that blocks UDP, and asks for TURN at once.
+export function startSfu(port, say = () => {}, options = {}) {
   if (typeof RTCPeerConnection !== 'function') return false;
+  let turnTimer = 0, relay = null, viaTurn = false;  // relay: the TURN iceServers the next offer uses
   let pc = null, answered = false, connected = false, attempt = 0, pause = 1000, retryAt = 0, retryTimer = 0;
   let me = -1, race = null, released = false, readySent = false, readyTimer = 0, connectTimer = 0;
   const channels = new Map();   // channelId -> { memberId, name, local, dc, at }
@@ -40,7 +51,7 @@ export function startSfu(port, say = () => {}) {
   const route = on => port.postMessage({ kind: 'route', sfu: on });
 
   function teardown() {
-    clearTimeout(connectTimer); clearTimeout(readyTimer);
+    clearTimeout(connectTimer); clearTimeout(readyTimer); clearTimeout(turnTimer);
     for (const c of channels.values()) try { c.dc?.close(); } catch {}
     channels.clear(); closing.clear(); waiting.clear();
     try { pc?.close(); } catch {}
@@ -58,7 +69,9 @@ export function startSfu(port, say = () => {}) {
   async function offer() {
     teardown();
     const mine = ++attempt;
-    pc = new RTCPeerConnection({ iceServers: [] });
+    const turn = relay; relay = null;
+    viaTurn = !!turn;
+    pc = new RTCPeerConnection(turn ? { iceServers: turn, iceTransportPolicy: 'relay' } : { iceServers: [], ...(options.forceTurn ? { iceTransportPolicy: 'relay' } : {}) });
     // the offer needs the SCTP transport: one negotiated channel nobody uses, on an id the room's
     // allocations don't reach in practice
     pc.createDataChannel('probe', { negotiated: true, id: PROBE_ID });
@@ -80,7 +93,7 @@ export function startSfu(port, say = () => {}) {
           pc.addEventListener('icegatheringstatechange', () => { if (pc?.iceGatheringState === 'complete') { clearTimeout(t); done(); } });
         });
       if (mine !== attempt) return;
-      signal({ type: 'sfu_offer', sdp: pc.localDescription.sdp });
+      signal({ type: 'sfu_offer', sdp: pc.localDescription.sdp, ...(turn ? { turn: true } : {}) });
       connectTimer = setTimeout(() => { if (mine === attempt && !connected) failed('no connection (UDP blocked?)'); }, CONNECT_TIMEOUT_MS);
     } catch (e) { if (mine === attempt) failed(`offer: ${e.message}`); }
   }
@@ -205,8 +218,23 @@ export function startSfu(port, say = () => {}) {
       return;
     case 'sfu_answer':
       if (!pc) return;
-      pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).then(() => { answered = true; }, err => failed(`answer: ${err.message}`));
+      const asked = attempt;
+      pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).then(() => {
+        answered = true;
+        // direct UDP first; TURN only if it hasn't connected (a relay session is already on TURN)
+        if (!viaTurn) turnTimer = setTimeout(() => {
+          if (asked === attempt && pc && !connected) { say('net: SFU: not connected; asking the room for TURN'); signal({ type: 'sfu_turn' }); }
+        }, options.forceTurn ? 0 : TURN_AFTER_MS);
+      }, err => failed(`answer: ${err.message}`));
       return;
+    case 'sfu_turn': {  // this game's own credentials (the room sends them to nobody else)
+      const urls = (Array.isArray(msg.urls) ? msg.urls : []).filter(u => typeof u === 'string' && /^turns:turn\.cloudflare\.com:\d{1,5}(\?transport=tcp)?$/.test(u));
+      if (!pc || connected || !urls.length || typeof msg.username !== 'string' || typeof msg.credential !== 'string' || !msg.username || !msg.credential) return;
+      relay = [{ urls, username: msg.username, credential: msg.credential }];
+      say('net: SFU: new session through TURN over TLS');
+      offer();
+      return;
+    }
     case 'sfu_channels': allocations(msg.channels || [], !!msg.full); return;
     case 'sfu_closed': for (const id of msg.channelIds || []) close(id); return;
     case 'sfu_ready': if (race && msg.race === race.startAt) release(); return;
