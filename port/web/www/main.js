@@ -447,15 +447,33 @@ siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() 
   document.body.classList.add('site-disc');  // this site's disc only: the ISO picker goes (index.html)
   let key = params.get('disc') || '';
   try { if (key) localStorage.setItem(DISC_KEY, key); else key = localStorage.getItem(DISC_KEY) || ''; } catch { /* no storage */ }
-  if (!/^[\w-]{8,128}$/.test(key)) {
-    $('hostedNote').hidden = false;
-    $('hostedNote').textContent = 'Open this site with the invite link you were given: it carries the disc.';
+  if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
+  const valid = k => /^[\w-]{8,128}$/.test(k);
+  const play = k => { $('hosted').disabled = true;
+    navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
+    start({ discUrl: `/disc/${encodeURIComponent(k)}`, env }); };
+  $('hosted').hidden = $('hostedNote').hidden = false;
+  if (valid(key)) {
+    warmDisc(`/disc/${encodeURIComponent(key)}`);
+    $('hosted').onclick = () => play(key);
     return;
   }
-  if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
-  $('hosted').hidden = $('hostedNote').hidden = false;
-  warmDisc(`/disc/${encodeURIComponent(key)}`);
-  $('hosted').onclick = () => { $('hosted').disabled = true;
-    navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
-    start({ discUrl: `/disc/${encodeURIComponent(key)}`, env }); };
+  // This device hasn't opened the invite link: the same button, with the access code asked once
+  // (checked against the site, then kept in this browser like the link's).
+  $('accessRow').hidden = false;
+  $('hostedNote').textContent = 'First time on this device: paste the access code, or open your invite link once.';
+  const tryCode = async () => {
+    const k = $('accessCode').value.trim().replace(/^.*[?&]disc=/, '').replace(/[&#].*$/, '');  // a whole link pasted works too
+    if (!valid(k)) { $('hostedNote').textContent = 'That is not an access code: paste the part after disc= in your invite link.'; return; }
+    $('hosted').disabled = true;
+    const ok = await fetch(`/disc/${encodeURIComponent(k)}/info`, { cache: 'no-store' }).then(r => r.ok, () => false);
+    $('hosted').disabled = false;
+    if (!ok) { $('hostedNote').textContent = 'That code does not open this site\'s disc. Check it, or ask for a new invite link.'; return; }
+    try { localStorage.setItem(DISC_KEY, k); } catch { /* no storage: this session only */ }
+    $('accessRow').hidden = true;
+    $('hostedNote').textContent = 'Starting: the disc streams as you play. This device remembers the code.';
+    play(k);
+  };
+  $('hosted').onclick = tryCode;
+  $('accessCode').addEventListener('keydown', e => { if (e.key === 'Enter') tryCode(); });
 });
