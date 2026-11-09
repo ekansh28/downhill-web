@@ -1,6 +1,14 @@
 [
   {
     "date": "2026-11-09",
+    "title": "Invite links say whose game it is",
+    "items": [
+      "A room's invite link (menu > Copy invite link, or Invite friends) now shows \"Join NAME's game\" with how many riders are in, when you paste it in Discord or WhatsApp.",
+      "The link works for friends who have never been here: it brings everything needed to play."
+    ]
+  },
+  {
+    "date": "2026-11-09",
     "title": "Smoother races on gaming laptops",
     "items": [
       "Chrome and Edge often draw the game on a laptop's Intel graphics instead of its NVIDIA or AMD card. On our test laptop the NVIDIA card makes the busiest race moments about 65% faster (55 fps instead of 33).",
