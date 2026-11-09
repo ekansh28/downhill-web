@@ -13,7 +13,7 @@ const MEMORY = 96;    // blocks kept in memory here
 export async function createRemoteDisc(base, say, onProgress = () => {}, waitingOn = () => {}) {
   const got = await fetch(`${base}/info`, { cache: 'no-store' });
   if (!got.ok) throw Error(`the site's disc: ${got.status} ${(await got.text()).slice(0, 200)}`);
-  const { size, tag, block: BLOCK, check } = await got.json();
+  const { size, tag, block: BLOCK, check, later = '' } = await got.json();
   if (!Number.isSafeInteger(size) || size <= 0 || !BLOCK) throw Error('the site sent no disc size');
 
   const shared = new SharedArrayBuffer(16 + BLOCK), ctrl = new Int32Array(shared, 0, 4), data = new Uint8Array(shared, 16, BLOCK);
@@ -34,7 +34,7 @@ export async function createRemoteDisc(base, say, onProgress = () => {}, waiting
       }
     };
   });
-  store.postMessage({ type: 'open', base, tag, size, block: BLOCK, shared });
+  store.postMessage({ type: 'open', base, tag, size, block: BLOCK, shared, later });
   waitingOn(ctrl);  // the page watches ctrl[3]: the game is waiting on the network
   await ready;
 

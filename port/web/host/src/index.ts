@@ -28,6 +28,8 @@ interface HostEnv extends Env {
   DISC_ASSETS?: string;
   /** The blocks the game reads first, in order (deploy.mjs, from disc-boot.json): the page fetches them before Start. */
   DISC_BOOT?: string;
+  /** The movies' blocks (deploy.mjs, "a-b,c" ranges): the page's disc store downloads them last. */
+  DISC_LATER?: string;
 }
 
 const BLOCK = 256 << 10;  // small: on a slow line a 1 MiB miss stalls the game for seconds
@@ -86,16 +88,18 @@ const blockHeaders = {
   "Cache-Control": "private, max-age=31536000, immutable",
 };
 
-/** DISC_BOOT's blocks: "a-b,c,..." ranges (a variable stays small). */
-function bootList(env: HostEnv): number[] {
+/** "a-b,c,..." ranges of blocks (a variable stays small), at most `max` of them. */
+function blockList(text: string | undefined, max: number): number[] {
   const out: number[] = [];
-  for (const part of (env.DISC_BOOT || "").split(",")) {
+  for (const part of (text || "").split(",")) {
     const m = /^(\d+)(?:-(\d+))?$/.exec(part);
     if (!m) continue;
-    for (let i = Number(m[1]); i <= Number(m[2] ?? m[1]) && out.length < 2000; i++) out.push(i);
+    for (let i = Number(m[1]); i <= Number(m[2] ?? m[1]) && out.length < max; i++) out.push(i);
   }
   return out;
 }
+/** DISC_BOOT's blocks: the ones the game reads first, in order. */
+const bootList = (env: HostEnv) => blockList(env.DISC_BOOT, 2000);
 
 function checkFor(env: HostEnv, size: number): unknown {
   try {
@@ -118,7 +122,8 @@ async function discFromAssets(request: Request, env: HostEnv, rest: string[]): P
     return discJson({ error: "no disc on this site" }, 404);
   }
   if (rest.length === 1 && rest[0] === "info")
-    return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size), boot: bootList(env) });
+    return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size), boot: bootList(env),
+      later: env.DISC_LATER || "" });
   if (rest.length !== 2 || rest[0] !== a.tag || !/^\d{1,7}$/.test(rest[1]))
     return discJson({ error: rest[0] === a.tag ? "not found" : "the disc changed: reload the page" }, rest[0] === a.tag ? 404 : 409);
   const first = Number(rest[1]);

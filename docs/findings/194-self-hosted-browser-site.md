@@ -51,3 +51,21 @@ static assets (`_headers`, `run_worker_first`, 25 MiB per file); the Cache API. 
 API stores anything on `workers.dev` is unclear from the docs (older pages say no, a 2025 change
 reportedly lifted it), which is why the Worker reports `X-Disc-Cache`. MDN:
 `FileSystemSyncAccessHandle` (dedicated workers only).
+
+## Faster disc download (2026-11-09)
+
+Measured from this machine to the site (ping 230 ms to its Cloudflare location): a 256 KiB block
+1.2-1.7 s (0.6-1 s to the first byte), a 16-block run 1.4-2.1 MB/s, a static 12.9 MB file
+3.1-4.2 MB/s; 6 runs at once 3.0 MiB/s, 12 at once 3.4 MiB/s, so the line itself tops out near
+3.4 MiB/s. The background fill sent one 8-block run at a time (about 1.5 MB/s), in disc order,
+and 1,370 of the image's 2,406 MiB are FMV (`/MOV/*.PSS`: the attract loop, the riders' bios, the
+credits), starting at block 79.
+- `deploy.mjs` reads the image's ISO 9660 directory and publishes the blocks wholly inside the
+  movies as `DISC_LATER` ranges (5,453 blocks, 235 characters); `/info` carries them as `later`.
+- `disc_store.js` fills everything else first, then the movies, three 16-block runs at a time; a
+  game read still aborts the fill. The game's own reads, read-ahead and the pause while riding
+  are unchanged.
+- The start card's warm-up of the boot list runs 12 requests at once instead of 6.
+- Simulated over the real layout (`nextRun`): every block once, no run mixes the two kinds,
+  1,051 MiB before the first movie block: about 5 minutes at 3.4 MiB/s instead of about 25 for
+  the whole image at the old rate.

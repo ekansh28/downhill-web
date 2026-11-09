@@ -7,18 +7,23 @@
 // - The game's reads: the game worker waits on a SharedArrayBuffer (ctrl, below) for one block at a
 //   time; this worker answers from the copy, or downloads it first. They always go first.
 // - Read ahead: after a block the copy lacks, the next AHEAD blocks.
-// - Fill: the rest of the image, in order, FILL_RUN blocks per request (dropped when the game needs
-//   a block, and asked again later), so the whole disc ends up here and
-//   the game never waits on the network again. It pauses while the game is riding (the race's own
+// - Fill: the rest of the image, FILL_RUN blocks per request and FILL_LANES requests at once
+//   (dropped when the game needs a block, and asked again later), so the whole disc ends up here and
+//   the game never waits on the network again. Everything but the movies first (the site's `later`
+//   ranges, deploy.mjs: 57% of the image is FMV the game plays only when asked), so the levels,
+//   textures, music and riders are here in about half the time; then the movies. It pauses while the game is riding (the race's own
 //   reads and the online snapshots keep the line) and for a moment after each of the game's misses
 //   (a level is loading); the page can pause it too.
 //
 // ctrl (Int32Array over the shared buffer): [0] state: 0 idle, 1 asked, 2 answered, 3 failed;
 // [1] the block asked for; [2] the answer's length. data: the block's bytes.
-const AHEAD = 16, AFTER_MISS_MS = 1500, NO_COPY_KEEP = 64, FILL_RUN = 8, REQUEST_MS = 12000;
+// FILL_LANES: one request at a time leaves a far link idle between requests (a 230 ms round trip,
+// 0.8 s to the first byte: 1.5 MB/s), three keep it full (3.4 MB/s on the same line).
+const AHEAD = 16, AFTER_MISS_MS = 1500, NO_COPY_KEEP = 64, FILL_RUN = 16, FILL_LANES = 3, REQUEST_MS = 12000;
 let base, tag, size, BLOCK, count, ctrl, data;
 let copy = null, map = null, have = null, stored = 0, full = false;
-let riding = false, paused = false, lastMiss = 0, fillAt = 0, failures = 0, fillAbort = null;
+let riding = false, paused = false, lastMiss = 0, fillAt = 0, lateAt = 0, failures = 0, later = null;
+const fills = new Set();  // the fill's requests in flight: a game's read aborts them
 const ahead = [], inflight = new Map(), spare = new Map();
 const bootOrder = [], bootSeen = new Set(), BOOT_MAX = 600;  // the game's first blocks, in order (deploy.mjs ships them)
 const stats = { net: 0, netMs: 0, worst: 0, local: 0 };
@@ -102,7 +107,7 @@ async function serve() {
     if (state !== 1) { const w = Atomics.waitAsync(ctrl, 0, state); if (w.async) await w.value; continue; }
     const i = ctrl[1], local = have?.[i] === 1 || spare.has(i);
     if (bootOrder.length < BOOT_MAX && !bootSeen.has(i)) { bootSeen.add(i); bootOrder.push(i); }
-    if (!local && !inflight.has(i)) fillAbort?.abort();
+    if (!local && !inflight.has(i)) for (const f of fills) f.abort();
     // The game can't go on without this block, so its read never fails: it is asked again until it
     // comes (the page shows that the game is waiting on the network, from ctrl[3]). Only a gone link
     // or a new upload (404, 409) ends it, as nothing will answer those.
@@ -129,16 +134,23 @@ async function serve() {
   }
 }
 
-// The next run of missing blocks to fill: [first, n], or null.
+// The next run of missing blocks to fill: [first, n], or null. Two passes over the image: first the
+// blocks outside the movies (later[i] 0), then the movies' (1); a run stays within one kind.
 function nextRun() {
-  while (fillAt < count && (have[fillAt] === 1 || inflight.has(fillAt))) fillAt++;
-  if (fillAt >= count) return null;
-  let n = 1;
-  while (n < FILL_RUN && fillAt + n < count && have[fillAt + n] !== 1 && !inflight.has(fillAt + n)) n++;
-  return [fillAt, n];
+  const wanted = j => have[j] !== 1 && !inflight.has(j);
+  for (const late of [0, 1]) {
+    let at = late ? lateAt : fillAt;
+    while (at < count && (!wanted(at) || (later ? later[at] : 0) !== late)) at++;
+    if (late) lateAt = at; else fillAt = at;
+    if (at >= count) continue;
+    let n = 1;
+    while (n < FILL_RUN && at + n < count && wanted(at + n) && (later ? later[at + n] : 0) === late) n++;
+    return [at, n];
+  }
+  return null;
 }
 
-// read ahead (both lanes) and fill (the first lane only, when the game isn't loading or riding)
+// read ahead (every lane) and fill (the first FILL_LANES, when the game isn't loading or riding)
 async function background(lane) {
   for (;;) {
     let i = -1;
@@ -147,12 +159,14 @@ async function background(lane) {
       try { await load(i); failures = 0; } catch { await sleep(Math.min(30000, 1000 * 2 ** failures++)); }
       continue;
     }
-    const run = lane === 0 && copy && !full && !paused && !riding && performance.now() - lastMiss > AFTER_MISS_MS ? nextRun() : null;
-    if (!run) { await sleep(lane === 0 && copy && stored < count ? 250 : 1000); continue; }
-    const abort = fillAbort = new AbortController();
+    const filler = lane < FILL_LANES;
+    const run = filler && copy && !full && !paused && !riding && performance.now() - lastMiss > AFTER_MISS_MS ? nextRun() : null;
+    if (!run) { await sleep(filler && copy && stored < count ? 250 : 1000); continue; }
+    const abort = new AbortController();
+    fills.add(abort);
     try { await fetchRun(run[0], run[1], abort.signal); failures = 0; }
     catch { if (!abort.signal.aborted) await sleep(Math.min(30000, 1000 * 2 ** failures++)); }
-    finally { if (fillAbort === abort) fillAbort = null; }
+    finally { fills.delete(abort); }
   }
 }
 
@@ -169,6 +183,12 @@ onmessage = async e => {
   if (m.type !== 'open') return;
   ({ base, tag, size, block: BLOCK } = m); ctrl = new Int32Array(m.shared, 0, 4); data = new Uint8Array(m.shared, 16, BLOCK);
   count = Math.ceil(size / BLOCK);
+  // the movies' blocks ("a-b,c" ranges from the site's /info): filled after everything else
+  later = new Uint8Array(count);
+  for (const part of String(m.later || '').split(',')) {
+    const r = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (r) for (let i = Number(r[1]); i <= Math.min(count - 1, Number(r[2] ?? r[1])); i++) later[i] = 1;
+  }
   let note = '';
   try {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('dhd-disc', { create: true });
@@ -182,6 +202,7 @@ onmessage = async e => {
     note = err.name === 'NoModificationAllowedError' ? 'the disc is open in another tab' : err.message;
   }
   postMessage({ type: 'ready', stored, count, kept: !!copy, note });
-  serve(); background(0); background(1);
+  serve();
+  for (let lane = 0; lane < FILL_LANES + 1; lane++) background(lane);  // the fill's lanes and one more for read ahead
   setInterval(progress, 2000);
 };

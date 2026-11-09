@@ -402,7 +402,7 @@ async function warmDisc(base) {
       const i = list[next++];
       try { await (await fetch(`${base}/${info.tag}/${i}`)).arrayBuffer(); got++; } catch { /* the store fetches it later */ }
       $('hostedNote').textContent = `Getting the game ready: ${Math.round(got / list.length * 100)}% (you can start now)`; } };
-    await Promise.all(Array.from({ length: 6 }, lane));
+    await Promise.all(Array.from({ length: 12 }, lane));  // a far edge (0.8 s to the first byte) needs many in flight
     if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
   } catch { /* nothing to warm: the game streams as before */ }
 }
