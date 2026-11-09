@@ -138,9 +138,15 @@ void client_connected(NetClient *c, const NetTransport *tr)
     /* clientVersion: this release (port/include/version.h), for the server's version gate */
     /* features: this client shows the race room's countdown (the server runs one only when
        everyone's does); race_rejoin: it races on over the SFU while its room connection is down
-       and rejoins its race (finding 175) */
+       and rejoins its race (finding 175); no_sfu (the browser's build, whose transport has no
+       WebRTC yet): its races go over the room WebSocket (relay races, finding 199) */
+#if defined(__wasm__)
+#define NET_FEATURES "[\"countdown\",\"session\",\"race_rejoin\",\"no_sfu\"]"
+#else
+#define NET_FEATURES "[\"countdown\",\"session\",\"race_rejoin\"]"
+#endif
     say(c, "{\"type\":\"hello\",\"protocol\":%d,\"version\":\"%s\",\"clientVersion\":\"%s\",\"isoSha256\":\"%s\","
-        "\"name\":\"%s\",\"features\":[\"countdown\",\"session\",\"race_rejoin\"]%s%s}", NET_PROTOCOL, c->version,
+        "\"name\":\"%s\",\"features\":" NET_FEATURES "%s%s}", NET_PROTOCOL, c->version,
         DHD_VERSION, c->iso, name, install, token);
     if (!c->racing && c->lobby.state != NET_RECONNECTING)
         c->lobby.state = NET_CONNECTING;
