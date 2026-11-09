@@ -41,6 +41,7 @@ async function player(name, host = {}) {
     return { state: dv.getInt32(at, true), code: new TextDecoder().decode(ram.subarray(at + 8, ram.indexOf(0, at + 8))),
              isHost: dv.getInt32(at + 24, true), members: dv.getInt32(at + 160, true), ping: dv.getInt32(at + 1928, true) }; };
   net.host_service_net_init(put(server), put(name), put('dhd-port test-browser 0000000000000000'), put('c'.repeat(64)));
+  if (net.host_service_net_offered() !== 1) fail('online is not offered in the browser');  // the ONLINE menu asks it first
   return { net, put, ram, lobby };
 }
 async function until(what, test, ms = 8000) {

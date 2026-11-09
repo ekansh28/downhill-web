@@ -165,7 +165,7 @@ export async function createNet(bytes, guest, say, host = {}) {
 
   const services = {
     // Online is offered in this browser build (upstream turns it off there, finding 195): net.c says 1.
-    host_service_net_offered: () => x.host_service_net_offered(),
+    host_service_net_offered: () => 1,  // dhd_net.wasm doesn't export net.c's answer: the browser always offers online
     host_service_net_init: (a, b, c, d) => {
       base = a ? dec.decode(guest.bytes(a, guest.strlen(a))).replace(/\/+$/, '') : '';
       withStrings([a, b, c, d], x.host_service_net_init);
