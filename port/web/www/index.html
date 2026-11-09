@@ -61,6 +61,12 @@
   .gpu-tip[hidden] { display: none; }
   .import { cursor: pointer; text-decoration: underline; color: #000080; align-self: flex-start; }
   .card .status-bar { margin: 0; }
+  .kofi { position: fixed; left: 16px; bottom: 16px; z-index: 9; display: flex; align-items: center; gap: 8px;
+    padding: 9px 16px 9px 12px; border-radius: 999px; background: #f45d22; color: #fff; text-decoration: none;
+    font: bold 14px/1 system-ui, "Segoe UI", sans-serif; box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+  .kofi:hover { filter: brightness(1.08); }
+  .kofi svg { width: 20px; height: 20px; }
+  body.running .kofi { display: none; }
   .invite-float { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 7; font-weight: bold; }
   .invite-float[hidden], body:not(.running) .invite-float { display: none; }
   /* tooltips over the game, as Windows 98 drew them */
@@ -178,6 +184,13 @@
   </div>
 </div>
 
+<!-- Support (Ko-fi). Not Ko-fi's floating widget: its stylesheet, button and donation frame are
+     blocked by this page's cross-origin isolation (COEP require-corp, which the game needs), so the
+     same button opens the Ko-fi page in a new tab. The home page only. -->
+<a class="kofi" href="https://ko-fi.com/ekanshism" target="_blank" rel="noopener">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 6h13a4 4 0 0 1 0 8h-1.2A6 6 0 0 1 10 18H8a6 6 0 0 1-6-6V7a1 1 0 0 1 1-1Zm13 2v4a2 2 0 0 0 0-4ZM9.7 9.2c-.9-.9-2.6-.4-2.6 1 0 1.6 2.6 3.2 2.6 3.2s2.6-1.6 2.6-3.2c0-1.4-1.7-1.9-2.6-1Z"/></svg>
+  Support me
+</a>
 <!-- in a room: a link that joins it (main.js invite; the room's code from net.js) -->
 <button class="invite-float" id="inviteFloat" type="button" hidden>Invite friends</button>
 <div class="disc-wait" id="discWait" hidden>Loading game data from the network&hellip;</div>
