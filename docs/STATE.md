@@ -310,7 +310,7 @@ Opt-in VU1 diagnostics: `DHD_VU_CAPTURE_FAILURE`, `DHD_VU_CAPTURE_ENTRY`, `DHD_V
 ### Open
 - Browser speed: about 25-30 fields/s on the title, 17-25 in a race before finding 087's work;
   about 40-45 on the title and 55-60 in a race now (finding 145), where the VU worker's VU1
-  interpreter (`run_micro`) is the limit; VIF1/VU1 and the GS already have a worker each (090 SP4).
+  (`run_micro`: its AOT blocks, finding 146) is the limit; VIF1/VU1 and the GS already have a worker each (090 SP4).
   Deferred vsync and display-refresh pacing were tried and not kept (finding 143): no gain while
   the VU worker is the limit; pacing to be measured again once the race holds 60. VU1 runs
   entirely in AOT blocks and native kernels already (finding 146: no interpreted pair in a race),
