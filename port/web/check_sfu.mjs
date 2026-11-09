@@ -10,7 +10,7 @@ import { runPage } from './cdp.mjs';
 
 const server = process.argv[2] || 'ws://127.0.0.1:8787', SECONDS = Number(process.argv[3] || 3);
 // relay: the same race with both players saying no_sfu, over the room WebSocket (finding 199), to compare
-const RELAY = process.argv[4] === 'relay';
+const RELAY = process.argv[4] === 'relay', TICKS_ALL = Math.round(SECONDS * 60);
 const sfuJs = readFileSync(new URL('./www/sfu.js', import.meta.url));
 
 const page = `<!doctype html><meta charset="utf-8"><script type="module">
@@ -72,6 +72,8 @@ window.result = (async () => {
       const f = new Uint8Array(200); f[0] = 5; f[1] = 9; f[2] = 6; f[3] = 0; f[4] = i & 255; f[5] = i >> 8; f[6] = k;
       new DataView(f.buffer).setFloat64(8, performance.now(), true);  // when it went, for its delay
       p.sendFrame(f);
+      // voice (finding 183's EVENT_VOICE: version 2, kind 11, a 16-bit sequence, Opus bytes) from the host
+      if (k === 0) { const vf = new Uint8Array(70); vf[0] = 6; vf[1] = 9; vf[2] = 2; vf[3] = 11; vf[4] = i & 255; vf[5] = i >> 8; p.sendFrame(vf); }
       if (i % 36 === 0 && i < 180) { const ev = new Uint8Array(20); ev[0] = 6; ev[1] = 9; ev[2] = 2; ev[3] = 1; ev[4] = i / 36; p.sendFrame(ev); }
     }
     await new Promise(r => setTimeout(r, 16));
@@ -79,12 +81,14 @@ window.result = (async () => {
   await new Promise(r => setTimeout(r, 1500));
   const slotOf = p => p.start.yourSlot;
   const summary = p => {
-    const states = p.got.filter(g => g.frame[0] === 5), events = p.got.filter(g => g.frame[0] === 6);
+    const states = p.got.filter(g => g.frame[0] === 5), voice = p.got.filter(g => g.frame[0] === 6 && g.frame[2] === 2 && g.frame[3] === 11),
+      events = p.got.filter(g => g.frame[0] === 6 && !(g.frame[2] === 2 && g.frame[3] === 11));
+    const seq = voice.map(g => g.frame[4] | g.frame[5] << 8), inOrder = seq.every((s, j) => !j || s > seq[j - 1]);
     const gaps = []; for (let i = 1; i < states.length; i++) gaps.push(states[i].at - states[i - 1].at);
     gaps.sort((a, b) => a - b);
     const delay = states.map(g => g.at - new DataView(g.frame.buffer).getFloat64(8, true)).sort((a, b) => a - b);
     const q = f => Math.round(delay[Math.floor((delay.length - 1) * f)] || 0);
-    return { states: states.length, events: events.length, via: [...new Set(p.got.map(g => g.via))],
+    return { states: states.length, events: events.length, voice: voice.length, voiceInOrder: inOrder, via: [...new Set(p.got.map(g => g.via))],
       slots: [...new Set(p.got.map(g => g.frame[1]))], maxGapMs: Math.round(gaps.at(-1) || 0), p99GapMs: Math.round(gaps[Math.floor(gaps.length * 0.99)] || 0),
       over250: gaps.filter(x => x > 250).length, delayMs: { p50: q(0.5), p95: q(0.95), p99: q(0.99), max: q(1) } };
   };
@@ -105,7 +109,7 @@ await runPage((req, res) => {
   if (!r || r.error) { console.log('FAIL', r?.error); return 1; }
   const via = RELAY ? 'socket' : 'sfu';
   const ok = r.transport === (RELAY ? 'relay' : 'sfu') && r.host.via.includes(via) && r.guest.via.includes(via) &&
-    r.host.states > SECONDS * 50 && r.guest.states > SECONDS * 50 && r.host.events === 5 && r.guest.events === 5 &&
+    r.host.states > SECONDS * 50 && r.guest.states > SECONDS * 50 && r.host.events === 5 && r.guest.events === 5 && r.guest.voice === TICKS_ALL && r.guest.voiceInOrder &&
     r.host.slots.length === 1 && r.host.slots[0] === r.guestSlot && r.guest.slots[0] === r.hostSlot;
   console.log(ok ? 'PASS' : 'FAIL');
   return ok ? 0 : 1;
