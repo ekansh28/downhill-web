@@ -21,9 +21,22 @@
   #screen { position: fixed; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; background: #000; outline: none; }
 
   /* Before Start: one window on a Windows 98 desktop. */
-  .setup { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: #008080; overflow: auto; }
+  .setup { position: fixed; inset: 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; align-content: center;
+    gap: 16px; padding: 16px; background: #008080; overflow: auto; }
   body.running .setup { display: none; }
   .card { width: min(30rem, 100%); }
+  /* a site with its own disc (port/web/host): only its Play button, not the ISO picker */
+  body.site-disc .own-disc { display: none; }
+  /* Dev notes (notes.json, newest first) */
+  .notes { width: min(26rem, 100%); }
+  .notes .window-body { margin: 8px; }
+  #notes { height: min(19rem, 50vh); overflow: auto; padding: 6px 10px; background: #fff;
+    box-shadow: inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; }
+  #notes h3 { margin: 8px 0 2px; font-size: 12px; }
+  #notes h3:first-child { margin-top: 0; }
+  #notes .when { color: #808080; font-weight: normal; }
+  #notes ul { margin: 0 0 6px; padding-left: 18px; }
+  #notes li { margin: 2px 0; }
   .card .window-body { display: flex; flex-direction: column; gap: 10px; margin: 10px 12px; }
   .card h1 { margin: 0; font-size: 20px; font-weight: bold; font-style: italic; letter-spacing: .02em; }
   .card .intro { margin: 0; }
@@ -116,7 +129,7 @@
       <!-- a site with its own disc (port/web/host), opened by its private link (?disc=KEY): main.js -->
       <button id="hosted" type="button" hidden>Play this site's disc</button>
       <p class="note" id="hostedNote" hidden>Starts at once: the disc streams as you play and downloads into this browser in the background, so later sessions load from here.</p>
-      <fieldset>
+      <fieldset class="own-disc">
         <legend>Your own disc</legend>
         <label class="drop" for="iso">
           <strong>Drop your .iso here</strong>
@@ -133,6 +146,14 @@
       <p class="status-bar-field">Chrome or Edge</p>
       <p class="status-bar-field">Nothing is uploaded</p>
       <p class="status-bar-field"><kbd>`</kbd> menu</p>
+    </div>
+  </div>
+  <div class="notes window">
+    <div class="title-bar">
+      <div class="title-bar-text">Dev notes</div>
+    </div>
+    <div class="window-body">
+      <div id="notes" role="log" aria-label="Updates">Loading&hellip;</div>
     </div>
   </div>
 </div>

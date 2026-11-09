@@ -415,14 +415,33 @@ async function warmDisc(base) {
     if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
   } catch { /* nothing to warm: the game streams as before */ }
 }
+// Dev notes (notes.json: [{ date, title, items: [...] }], newest first), on the start page.
+fetch('notes.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : Promise.reject(Error(r.status))).then(notes => {
+  const box = $('notes');
+  box.replaceChildren();
+  for (const n of notes) {
+    const h = document.createElement('h3'), when = document.createElement('span'), list = document.createElement('ul');
+    when.className = 'when';
+    when.textContent = n.date + ' ';
+    h.append(when, n.title);
+    for (const item of n.items || []) { const li = document.createElement('li'); li.textContent = item; list.append(li); }
+    box.append(h, list);
+  }
+}).catch(() => { $('notes').textContent = 'No notes yet.'; });
+
 siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(site => {
   if (!site) return;
   if (site.server === 'same-origin' && !('DHD_NET_SERVER' in env))
     env.DHD_NET_SERVER = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
   if (!site.disc) return;
+  document.body.classList.add('site-disc');  // this site's disc only: the ISO picker goes (index.html)
   let key = params.get('disc') || '';
   try { if (key) localStorage.setItem(DISC_KEY, key); else key = localStorage.getItem(DISC_KEY) || ''; } catch { /* no storage */ }
-  if (!/^[\w-]{8,128}$/.test(key)) return;
+  if (!/^[\w-]{8,128}$/.test(key)) {
+    $('hostedNote').hidden = false;
+    $('hostedNote').textContent = 'Open this site with the invite link you were given: it carries the disc.';
+    return;
+  }
   if (params.has('disc')) history.replaceState(null, '', location.pathname + location.search.replace(/([?&])disc=[^&]*&?/, '$1').replace(/[?&]$/, ''));
   $('hosted').hidden = $('hostedNote').hidden = false;
   warmDisc(`/disc/${encodeURIComponent(key)}`);

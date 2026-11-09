@@ -1,0 +1,30 @@
+[
+  {
+    "date": "2026-11-09",
+    "title": "Online races over WebRTC",
+    "items": [
+      "Browser players now race through Cloudflare's network directly: other riders show about 6x sooner than before (around 60 ms instead of 350 ms).",
+      "If WebRTC can't connect (a strict network, an old browser), the race goes through the server instead, so nobody is left out.",
+      "Riders are drawn where they are now, not where they were: smoother movement and fewer jumps."
+    ]
+  },
+  {
+    "date": "2026-11-09",
+    "title": "Faster start, new look",
+    "items": [
+      "The disc downloads the game's levels, music and riders first and the movies last: everything a race needs is in your browser after about 5 minutes on a typical line.",
+      "You can join a room right away: anything not downloaded yet streams as the game needs it.",
+      "A Windows 98 look for this page and the in-game menu (the key above Tab opens it while you play)."
+    ]
+  },
+  {
+    "date": "2026-11-09",
+    "title": "Downhill Revived 0.7.13 under the hood",
+    "items": [
+      "No more slow motion when the frame rate dips: the game keeps real time.",
+      "Pickups on the track are shared in online races.",
+      "Rejoin: if your connection drops in a race, you keep your place and come back.",
+      "Voice chat (hold V), text chat (Y), and REVIVED SETTINGS with an Online tab for voice and name tags."
+    ]
+  }
+]
