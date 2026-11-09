@@ -300,6 +300,7 @@ function discProgress(d) {
   if (d.stored >= d.count) { $('discState').textContent = 'Disc: all in this browser, nothing streams'; $('discPause').hidden = true; return; }
   $('discState').textContent = `Disc in this browser: ${pct}% (${(d.stored * d.block / 2 ** 20).toFixed(0)} MiB)` +
     (discPaused ? ', paused' : d.filling ? ', downloading' : ', waits while you ride') +
+    (d.track && d.track.stored < d.track.count ? ` · the room's track first: ${Math.floor(d.track.stored / d.track.count * 100)}%` : '') +
     (d.net ? ` · blocks from the site: ${d.net}, avg ${d.avgMs.toFixed(0)} ms` : '');
 }
 $('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });

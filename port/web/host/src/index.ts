@@ -30,6 +30,9 @@ interface HostEnv extends Env {
   DISC_BOOT?: string;
   /** The movies' blocks (deploy.mjs, "a-b,c" ranges): the page's disc store downloads them last. */
   DISC_LATER?: string;
+  /** Each online track's files as blocks (deploy.mjs), JSON: {"<game track index>": {level, blocks:
+   *  "a-b,c"}}: in a room on that track the page's disc store downloads them first. */
+  DISC_TRACKS?: string;
 }
 
 const BLOCK = 256 << 10;  // small: on a slow line a 1 MiB miss stalls the game for seconds
@@ -111,6 +114,21 @@ function checkFor(env: HostEnv, size: number): unknown {
   }
 }
 
+/** Where things are in the image (deploy.mjs read them from the same image as the check): the
+ *  movies' blocks and each track's. None for an image of another size, whose layout may differ. */
+function layoutFor(env: HostEnv, size: number): { later: string; tracks: Record<string, unknown> } {
+  const check = checkFor(env, size) as { size?: number } | null;
+  if (!check) return { later: "", tracks: {} };
+  let tracks: Record<string, unknown> = {};
+  try {
+    const t = env.DISC_TRACKS ? JSON.parse(env.DISC_TRACKS) : {};
+    if (t && typeof t === "object" && !Array.isArray(t)) tracks = t;
+  } catch {
+    /* none */
+  }
+  return { later: env.DISC_LATER || "", tracks };
+}
+
 /** The disc from the site's own files: Cloudflare keeps them at its edge, near the player, with no
  *  bucket behind each request. The chunk files are reachable only through this Worker (index.ts's
  *  fetch answers /disc-data/ itself, so the key still guards them). */
@@ -123,7 +141,7 @@ async function discFromAssets(request: Request, env: HostEnv, rest: string[]): P
   }
   if (rest.length === 1 && rest[0] === "info")
     return discJson({ size: a.size, tag: a.tag, block: BLOCK, check: checkFor(env, a.size), boot: bootList(env),
-      later: env.DISC_LATER || "" });
+      ...layoutFor(env, a.size) });
   if (rest.length !== 2 || rest[0] !== a.tag || !/^\d{1,7}$/.test(rest[1]))
     return discJson({ error: rest[0] === a.tag ? "not found" : "the disc changed: reload the page" }, rest[0] === a.tag ? 404 : 409);
   const first = Number(rest[1]);
@@ -156,7 +174,7 @@ async function disc(request: Request, env: HostEnv, ctx: ExecutionContext, rest:
     for (const bucket of from) {
       const head = await bucket.head(object).catch(() => null);
       if (!head) continue;
-      return discJson({ size: head.size, tag: tagOf(head), block: BLOCK, check: checkFor(env, head.size) });
+      return discJson({ size: head.size, tag: tagOf(head), block: BLOCK, check: checkFor(env, head.size), ...layoutFor(env, head.size) });
     }
     return discJson({ error: "the disc object is missing" }, 404);
   }

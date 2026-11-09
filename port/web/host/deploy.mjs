@@ -27,6 +27,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkImage } from './disc_check.mjs';
+import { discFiles, movieBlocks, trackBlocks } from './disc_layout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../../..');
@@ -136,39 +137,6 @@ if (fs.existsSync(bootFile)) {
   vars.DISC_BOOT = parts.join(',');
   console.log(`deploy: boot list of ${order.length} blocks (${vars.DISC_BOOT.length} characters)`);
 }
-// The disc's movie files (ISO 9660 directory, /MOV/*.PSS: the attract loop, the riders' bios, the
-// credits; 57% of the image): the blocks wholly inside them, as "a-b,c" ranges. The page's disc
-// store downloads them last, so the levels, textures, music and riders are in the browser first.
-function movieBlocks(iso, block) {
-  const fd = fs.openSync(iso, 'r'), read = (lba, n) => { const b = Buffer.alloc(n); fs.readSync(fd, b, 0, n, lba * 2048); return b; };
-  const files = [];
-  try {
-    const walk = (lba, size, dir) => {
-      const data = read(lba, Math.ceil(size / 2048) * 2048);
-      for (let at = 0; at < size;) {
-        const n = data[at];
-        if (!n) { at = (Math.floor(at / 2048) + 1) * 2048; continue; }
-        const len = data[at + 32], name = data.toString('latin1', at + 33, at + 33 + len).split(';')[0];
-        const flba = data.readUInt32LE(at + 2), fsize = data.readUInt32LE(at + 10);
-        if (len && !(len === 1 && data[at + 33] < 2)) {
-          if (data[at + 25] & 2) { if (dir.split('/').length < 8) walk(flba, fsize, `${dir}${name}/`); }
-          else files.push({ path: dir + name, lba: flba, size: fsize });
-        }
-        at += n;
-      }
-    };
-    const pvd = read(16, 2048);
-    walk(pvd.readUInt32LE(156 + 2), pvd.readUInt32LE(156 + 10), '/');
-  } finally { fs.closeSync(fd); }
-  const ranges = [];
-  for (const f of files.filter(f => /^\/MOV\/.*\.PSS$/i.test(f.path)).sort((a, b) => a.lba - b.lba)) {
-    const first = Math.ceil(f.lba * 2048 / block), last = Math.floor((f.lba * 2048 + f.size) / block) - 1;
-    if (last >= first) ranges.push([first, last]);
-  }
-  const blocks = ranges.reduce((n, [a, b]) => n + b - a + 1, 0);
-  return { text: ranges.map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(','), blocks };
-}
-
 if (site.disc) {
   const d = site.disc, fromAssets = d.source === 'assets';
   if (!fromAssets) {
@@ -193,9 +161,13 @@ if (site.disc) {
     if (check.code !== 1) die(`the image's online check failed: ${check.note}`);
     console.log(`deploy: disc check ${check.digest}${check.note ? ` (${check.note})` : ''}`);
     vars.DISC_CHECK = JSON.stringify({ size: check.size, code: check.code, digest: check.digest, note: check.note });
-    const movies = movieBlocks(d.iso, 256 << 10);  // the Worker's BLOCK (src/index.ts)
+    // Where things are in the image (disc_layout.mjs), as blocks of the Worker's BLOCK (src/index.ts):
+    // the movies download last; in a room, its track's files first.
+    const files = discFiles(d.iso), movies = movieBlocks(files, 256 << 10), tracks = trackBlocks(d.iso, files, 256 << 10);
     vars.DISC_LATER = movies.text;
+    vars.DISC_TRACKS = JSON.stringify(tracks.tracks);
     console.log(`deploy: ${movies.blocks} blocks of movies (${(movies.blocks / 4).toFixed(0)} MiB) download last`);
+    console.log(`deploy: ${Object.keys(tracks.tracks).length} tracks' files (${(tracks.blocks / 4).toFixed(0)} MiB in all, ${vars.DISC_TRACKS.length} characters) download first in their rooms`);
     if (fromAssets) {  // the image as 4 MiB files (a whole number of the Worker's 16-block runs), named by its hash
       const CHUNK = 4 << 20, tag = check.digest.slice(0, 16), dir = path.join(pub, 'disc-data', tag);
       for (const old of fs.existsSync(path.join(pub, 'disc-data')) ? fs.readdirSync(path.join(pub, 'disc-data')) : [])

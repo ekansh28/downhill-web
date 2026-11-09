@@ -4,6 +4,9 @@
    modules are wasm32, so the layouts agree. */
 #include "../../net/net.h"
 
+/* net.js reads these fields of the copy where they are here: the join code and the track */
+_Static_assert(offsetof(NetLobby, code) == 8 && offsetof(NetLobby, track) == 140, "NetLobby moved: update net.js host_service_net_get_lobby");
+
 int web_net_lobby_size(void) { return (int)sizeof(NetLobby); }
 int web_net_info_size(void) { return (int)sizeof(NetLobbyInfo); }
 int web_net_chat_size(void) { return (int)sizeof(NetChat); }

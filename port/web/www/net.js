@@ -28,6 +28,7 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 // startWorker(): the net worker (a Worker; the checks give Node's) }
 export async function createNet(bytes, guest, say, host = {}) {
   let roomCode = '';  // the room this game is in, for host.room (the page's invite link)
+  let roomTrack = -1;  // its track, for host.track (a streamed disc downloads its files first)
   let x, view;  // the client's exports and its memory, as bytes
   const mem = () => (view?.buffer === x.memory.buffer ? view : (view = new Uint8Array(x.memory.buffer)));
   const cstr = at => { const m = mem(); return dec.decode(m.subarray(at, m.indexOf(0, at))); };
@@ -178,7 +179,10 @@ export async function createNet(bytes, guest, say, host = {}) {
       // the room's join code for the page's invite link (private rooms too: the presence leaves theirs out)
       const m = mem(), state = m[scratch] | m[scratch + 1] << 8, live = state >= 2 && state <= 4;  // NET_LOBBY, NET_RACING, NET_RECONNECTING
       const code = live ? String.fromCharCode(...m.subarray(scratch + 8, scratch + 16)).replace(/ .*$/s, '') : '';
-      if (code !== roomCode) { roomCode = code; host.room?.(code); } },
+      if (code !== roomCode) { roomCode = code; host.room?.(code); }
+      // the room's track (NetLobby.track, net_web.c checks the place): a streamed disc gets its files first
+      const track = live ? new DataView(m.buffer).getInt32(scratch + 140, true) : -1;
+      if (track !== roomTrack) { roomTrack = track; host.track?.(track); } },
     // Text chat (finding 125): a line out, and the last lines (a NetChat) copied back.
     host_service_net_send_chat: a => withStrings([a], x.host_service_net_send_chat),
     host_service_net_get_chat: out => { x.host_service_net_get_chat(scratch); guest.bytes(out, CHAT).set(mem().subarray(scratch, scratch + CHAT)); },

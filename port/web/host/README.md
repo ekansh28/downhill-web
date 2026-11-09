@@ -9,6 +9,7 @@ other host, no public bucket, no other online server.
 | `src/index.ts` | The Worker: the page (static assets with the cross-origin isolation headers), `/v1/*` (online/server, unchanged), `/disc/<KEY>/...` (the disc), `/site.json` |
 | `deploy.mjs` | Stages `build/web-host/` (the page, the modules, `wrangler.jsonc`) and deploys it |
 | `disc_check.mjs` | The image's online disc check, worked out once at deploy time |
+| `disc_layout.mjs` | Where the movies and each online track's files are in the image (block ranges for the page's disc store), read at deploy time |
 | `site.local.json` | Your settings: never committed (`.gitignore`) |
 
 ## Deploy
@@ -35,7 +36,8 @@ The image is read in 256 KiB blocks, `/disc/<KEY>/<TAG>/<N>`, where TAG is the R
   private file system, kept between sessions): a block the game asks for comes from there, or is
   downloaded first (always before anything else), then the next 16 are read ahead. In the
   background it downloads the rest of the image, one block at a time, so the whole disc ends up in
-  the browser and nothing waits on the network any more. That download waits while the game is
+  the browser and nothing waits on the network any more (in an online room the track's files first, the
+  movies last: `disc_layout.mjs`). That download waits while the game is
   riding and for a moment after each of the game's misses, and the page menu (`) has Pause disc
   download and how much is already there.
 - In the Worker: the bucket nearest the Cloudflare location that serves the request (by
