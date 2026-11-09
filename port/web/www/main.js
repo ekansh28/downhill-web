@@ -142,6 +142,7 @@ const menu = $('menu'), hint = $('hint');
 let hintTimer;
 function showHint(ms = 4000) { hint.classList.add('show'); clearTimeout(hintTimer); hintTimer = setTimeout(() => hint.classList.remove('show'), ms); }
 function toggleMenu(open = menu.hidden) { menu.hidden = !open; if (open) hint.classList.remove('show'); else canvas.focus(); }
+$('menuClose').addEventListener('click', () => toggleMenu(false));  // the window's close button
 for (const [id, section] of [['controlsButton', $('controls')], ['logButton', log]])
   $(id).onclick = () => { section.hidden = !section.hidden; $(id).setAttribute('aria-pressed', String(!section.hidden));
     if (!section.hidden && section === log) log.scrollTop = log.scrollHeight; };
