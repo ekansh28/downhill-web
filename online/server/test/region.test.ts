@@ -187,3 +187,16 @@ describe("rooms and their region", () => {
     expect(fromOhio.codes).toEqual([naCode, euCode]);
   });
 });
+
+describe("hintOfColo (ROOM_PLACEMENT edge, this fork)", () => {
+  it("places by the Cloudflare location the creator reached", async () => {
+    const { hintOfColo } = await import("../src/region");
+    expect(hintOfColo("MRS")).toBe("weur");
+    expect(hintOfColo("cdg")).toBe("weur");
+    expect(hintOfColo("BOM")).toBe("apac");
+    expect(hintOfColo("SIN")).toBe("apac-se");
+    expect(hintOfColo("FRA")).toBe("eeur");
+    expect(hintOfColo("ZZZ")).toBeUndefined();
+    expect(hintOfColo(undefined)).toBeUndefined();
+  });
+});

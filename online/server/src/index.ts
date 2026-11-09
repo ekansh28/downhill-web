@@ -6,7 +6,7 @@ import { DEFAULT_LIMIT, MAX_BODY_BYTES, MAX_LIMIT, type PostResult, boardKey, ch
 import { LEADERBOARD_LIMIT_MAX, LEADERBOARD_MAX, SUBMIT_MAX, SUBMIT_WINDOW_MS, isMode } from "./leaderboard";
 import { MAX_RACE_MS, MIN_RACE_MS, REPLAY_MAX_BYTES, validateGhost } from "./replay";
 import { edgeStore, latestResponse, upstreamFetch } from "./latest";
-import { locationHintFor, placeOf, regionOfPlace, sortForRegion } from "./region";
+import { hintOfColo, locationHintFor, placeOf, regionOfPlace, sortForRegion } from "./region";
 import {
   RATE_MESSAGE, banMessage, cleanup, findBan, ipHash, onlineState, overLimit, refuseSocket, type GuardEnv,
 } from "./guard";
@@ -262,7 +262,11 @@ export default {
         // Cloudflare location their ISP happened to reach (finding 135). Only the first get() of an
         // object reads a hint; joining by code below needs none.
         const place = placeOf(request);
-        const hint = locationHintFor(place);
+        // ROOM_PLACEMENT "edge" (this fork's default): by the Cloudflare location the creator's
+        // traffic reaches (region.ts hintOfColo), so a room sits one short hop from players whose
+        // ISP routes to another continent; "country": upstream's rule above.
+        const byEdge = (env as unknown as Record<string, unknown>).ROOM_PLACEMENT !== "country";
+        const hint = (byEdge ? hintOfColo(place.colo) : undefined) ?? locationHintFor(place);
         for (let attempt = 0; attempt < 8; attempt++) {
           const code = randomCode();
           const room = env.ROOM.get(env.ROOM.idFromName(code), hint ? { locationHint: hint } : undefined);

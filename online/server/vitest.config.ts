@@ -26,6 +26,8 @@ export default defineConfig(async () => {
             COUNTDOWN_MS: "300",
             // Races over Realtime as upstream has them; the relay tests set "auto" or "relay" themselves.
             RACE_TRANSPORT: "sfu",
+            // Rooms placed by country, as upstream's region tests expect; hintOfColo has its own test.
+            ROOM_PLACEMENT: "country",
             COLO_PROBE: "off",
             CAP_WINDOW_MS: "1000",
             IP_HASH_KEY: "test-ip-hash-key",

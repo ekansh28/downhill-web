@@ -1321,6 +1321,13 @@ export class Room extends DurableObject<Env> {
     // games acknowledge at once. This pass adds what is still missing (a racer that connected
     // since) and closes the subscriptions of members sitting this race out.
     if (!race.relay) this.kickSubscribe(true);
+    // A race the SFU could have carried but a racer couldn't: everyone hears why it's slower (a
+    // chat note, memberId -1). Its riders come through this room, farther than WebRTC's path.
+    else if (this.sfuOn() && this.transport() === "auto") {
+      const why = racers.filter((x) => x.noSfu || !x.sfuConnected).map((x) => x.name).slice(0, 3).join(", ");
+      const text = `Slower race: ${why || "a racer"} not on WebRTC, so riders go through the server`.slice(0, 120);
+      this.broadcast({ type: "chat", memberId: -1, name: "", text, at: Date.now() });
+    }
   }
 
   /** How races travel (RACE_TRANSPORT): "sfu" always over Realtime (upstream's rule: a racer whose

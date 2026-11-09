@@ -82,6 +82,32 @@ export function locationHintFor(p: Place): LocationHint | undefined {
   }
 }
 
+// Where a Cloudflare location (request.cf.colo, an airport code) is, as a Durable Object hint:
+// placing a room by where its creator's traffic actually lands (ROOM_PLACEMENT "edge", this fork's
+// default). An ISP can send a country's players to another continent's edge (India's to Paris and
+// Marseille, measured 2026-11-09: a room placed by country, in Hong Kong, was 378-639 ms away
+// through them); a room by that edge is one short hop from it. Codes not listed: the country rule.
+const COLO_HINTS: Record<string, LocationHint> = Object.fromEntries(
+  ([
+    ["weur", "AMS BRU CDG MRS LYS BOD NCE LHR MAN EDI DUB MAD BCN LIS OPO ZRH GVA LUX RTM EIN"],
+    ["eeur", "FRA DUS HAM MUC STR BER TXL MXP FCO PMO CPH ARN OSL HEL WAW PRG BUD VIE OTP SOF ATH KBP RIX VNO TLL BEG ZAG IST KIV SKP LJU BTS"],
+    ["me", "DXB AUH DOH BAH KWI MCT RUH JED DMM AMM BGW TLV BEY EBL"],
+    ["afr", "JNB CPT DUR LOS NBO ACC CAI ALG CMN DAR KGL LAD MPM TUN"],
+    ["apac", "BOM DEL MAA HYD BLR CCU AMD COK NAG PAT KTM CMB DAC ISB KHI LHE"],
+    ["apac-se", "SIN KUL BKK CGK MNL SGN HAN PNH RGN"],
+    ["apac-ne", "HKG TPE NRT KIX ICN FUK OKA"],
+    ["oc", "SYD MEL BNE PER ADL AKL CHC"],
+    ["wnam", "SEA PDX SFO SJC LAX SAN LAS PHX DEN SLC YVR YYC"],
+    ["enam", "IAD EWR JFK BOS ATL ORD DFW IAH MIA YYZ YUL CLT MSP DTW PHL PIT CMH MCI STL BNA TPA MCO"],
+    ["sam", "GRU GIG EZE SCL BOG LIM UIO FOR POA CWB MDE PTY"],
+  ] as [LocationHint, string][]).flatMap(([hint, codes]) => codes.split(" ").map((code) => [code, hint])),
+);
+
+/** The hint for the Cloudflare location `colo`, or undefined when it isn't in the table. */
+export function hintOfColo(colo: string | undefined): LocationHint | undefined {
+  return colo ? COLO_HINTS[colo.toUpperCase()] : undefined;
+}
+
 /** The short region players see. */
 export type Region = "EU" | "NA" | "SA" | "ASIA" | "OC" | "AF" | "ME";
 

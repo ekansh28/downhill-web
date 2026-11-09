@@ -70,9 +70,12 @@ describe("relay races (RACE_TRANSPORT auto)", () => {
     expect([...(await clients[0].binary())]).toEqual([5, 1, 42]);
   });
 
-  it("with credentials, a racer whose session isn't connected makes the race a relay race", async () => {
-    const { starts } = await race(2, { credentials: true, connected: false });
+  it("with credentials, a racer whose session isn't connected makes the race a relay race, and says so", async () => {
+    const { starts, clients } = await race(2, { credentials: true, connected: false });
     for (const s of starts) expect(s.transport).toBe("relay");
+    const note = await clients[0].json("chat");
+    expect(note.memberId).toBe(-1);
+    expect(note.text).toMatch(/^Slower race: P0, P1 not on WebRTC/);
   });
 
   it("with credentials and every session connected, the race goes over Realtime", async () => {

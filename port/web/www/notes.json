@@ -1,6 +1,14 @@
 [
   {
     "date": "2026-11-09",
+    "title": "Lower ping, and no more mystery lag",
+    "items": [
+      "Rooms now run where your connection actually reaches Cloudflare, not just by country. Some internet providers send players in India to Paris or Marseille: a room in Hong Kong was 380-640 ms away for them, now it's about 200 ms.",
+      "If a race has to go through the server because someone isn't on WebRTC, the chat now says who (\"Slower race: NAME not on WebRTC\"). Riders lag in those races, so everyone should reload the page to get the latest version."
+    ]
+  },
+  {
+    "date": "2026-11-09",
     "title": "Voice chat everywhere, race feed, usernames",
     "items": [
       "Voice chat works anywhere in a room now: the lobby, the race room, before the start and while watching. In a race, other riders still sound nearer or farther by distance; riders who finished or are watching are heard by everyone.",
