@@ -51,7 +51,7 @@ if (site.disc && (args.has('--new-key') || !site.disc.key)) {
   fs.writeFileSync(configPath, JSON.stringify(site, null, 2) + '\n');
   site.disc.keyIsNew = true;
 }
-const link = () => site.disc && console.log(`private link: https://${name}.<your workers.dev subdomain>/?disc=${site.disc.key}`);
+const link = () => site.disc && console.log(`private link: ${(site.embed?.url || `https://${name}.<your workers.dev subdomain>`).replace(/\/+$/, '')}/?disc=${site.disc.key}`);
 if (args.has('--link')) { link(); process.exit(0); }
 
 // A module without its "name" custom section (function names for profiles and stack traces: a
