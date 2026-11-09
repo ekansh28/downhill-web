@@ -258,6 +258,12 @@ struct Assoc {
     pause: Duration,
     /// The last association went through the TURN relay: the next asks for one at once.
     turn_first: bool,
+    /// The room's welcome said `"sfu":"off"` (a server without Realtime, or this fork's relay
+    /// setting): no association; race frames go on the room WebSocket.
+    relay_room: bool,
+    /// The running race's start said `"transport":"relay"`: its frames go on the room WebSocket and
+    /// the room copies them to the other racers; an association stays for the next race.
+    relay_race: bool,
 }
 
 impl Assoc {
@@ -295,7 +301,8 @@ fn send_main(c: Arc<WsConn>) {
     });
     // Race frames the last flush handed to the SFU after its poll: poll again before waiting.
     let mut unwritten = false;
-    let mut a = Assoc { sfu: None, start: None, held: Vec::new(), retry_at: None, pause: Duration::from_secs(1), turn_first: false };
+    let mut a = Assoc { sfu: None, start: None, held: Vec::new(), retry_at: None, pause: Duration::from_secs(1), turn_first: false,
+                        relay_room: false, relay_race: false };
     // A room's welcome came on this connection: an association belongs here.
     let mut welcomed = false;
     while !c.stopping.load(Ordering::Acquire) {
@@ -322,8 +329,18 @@ fn send_main(c: Arc<WsConn>) {
                         lock(&c.queue).out.retain(|(binary, bytes)| !*binary || !matches!(bytes.first(), Some(5 | 6)));
                     }
                     let result = match kind {
+                        "welcome" if message["sfu"] == "off" => {
+                            // No Realtime in this room: its races are relayed (this fork's relay races).
+                            welcomed = true;
+                            a.relay_room = true;
+                            if a.sfu.take().is_some() { eprintln!("net: SFU: the room relays its races; no session"); }
+                            c.sfu_live.store(false, Ordering::Release);
+                            a.held.clear();
+                            Ok(())
+                        }
                         "welcome" => {
                             welcomed = true;
+                            a.relay_room = false;
                             // Back in this room (a rejoin): the room still has this game's session
                             // and the association still has its answer, so both stay, with what it
                             // said meanwhile. Otherwise a new association, and with it a new session.
@@ -344,11 +361,19 @@ fn send_main(c: Arc<WsConn>) {
                             a.failed();
                             Ok(())
                         }
+                        "start" if a.relay_room || message["transport"] == "relay" => {
+                            // A relayed race: nothing to set up, its frames go on this socket.
+                            a.relay_race = true;
+                            eprintln!("net: race relayed by the room (no SFU for this race)");
+                            Ok(())
+                        }
                         "start" => {
+                            a.relay_race = false;
                             a.start = Some(message.clone());
                             match a.sfu.as_mut() { Some(rtc) => rtc.signal(&message), None => a.start(&c, &wake) }
                         }
                         "ended" => {
+                            a.relay_race = false;
                             a.start = None;
                             a.sfu.as_mut().map_or(Ok(()), |rtc| rtc.signal(&message))
                         }
@@ -368,7 +393,7 @@ fn send_main(c: Arc<WsConn>) {
         }
         // A new association after a failure's pause, or for a TURN relay whose credentials near
         // their end between races; only on a room connection whose welcome came.
-        if connected && welcomed {
+        if connected && welcomed && !a.relay_room {
             let due = match a.sfu.as_ref() {
                 None => a.retry_at.is_none_or(|t| std::time::Instant::now() >= t),
                 Some(rtc) => rtc.renew_due(),
@@ -418,7 +443,7 @@ fn flush(c: &WsConn, a: &mut Assoc) {
     loop {
         let item = lock(&c.queue).out.pop_front();
         let Some((binary, data)) = item else { break };
-        if binary && matches!(data.first(), Some(5 | 6)) {
+        if binary && matches!(data.first(), Some(5 | 6)) && !a.relay_room && !a.relay_race {
             // A full event queue: the association is stuck; a new one replaces it.
             if a.sfu.as_mut().is_some_and(|rtc| rtc.send(&data).is_err()) {
                 eprintln!("net: SFU send queue full");

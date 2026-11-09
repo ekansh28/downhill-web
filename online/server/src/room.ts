@@ -11,8 +11,10 @@ import {
   COUNTDOWN_MS,
   DEFAULT_MAX_PLAYERS,
   FEATURE_COUNTDOWN,
+  FRAME_EVENT,
   FRAME_PING,
   FRAME_PONG,
+  FRAME_STATE,
   HELLO_TIMEOUT_MS,
   OUTDATED_MESSAGE,
   MAX_BINARY_BYTES,
@@ -114,6 +116,13 @@ const REJOIN_GRACE_MS = 20_000;
 const REPLACED_CLOSE = 1000;
 /** A hello feature (finding 175): see Member.raceRejoin. */
 const FEATURE_RACE_REJOIN = "race_rejoin";
+/** The hello says this game has no WebRTC (the browser before its SFU client): its races go over
+    the room WebSocket (relay races, below). */
+const FEATURE_NO_SFU = "no_sfu";
+/** A relay race's racers may send this many binary messages a cap window (their STATE bundles,
+    60 a second for a player's own rider and 30 for each AI bundle, voice frames, events, pings),
+    not the SFU race's BINARY_PER_WINDOW, which only counts pings. */
+const RELAY_BINARY_PER_WINDOW = 2000;
 
 /** A member's rejoin token (finding 137): 16 random bytes in hex, sent only to that member's game
     in its welcome. Its rejoin hello sends it back and gets the member again; nothing else does. */
@@ -145,6 +154,8 @@ interface Member {
       connection is down and rejoins its race (finding 175). Older games drop their SFU with the
       socket, so a drop in their race still takes them out of it at once. */
   raceRejoin?: boolean;
+  /** The hello listed FEATURE_NO_SFU: this game races only over the room WebSocket. */
+  noSfu?: boolean;
   /** This member's Realtime session for its whole stay in the room (finding 177): made from its
       game's sfu_offer when it joins, kept across races with its two publications and its
       subscriptions; closed when the member leaves, when it fails, or when the game offers again
@@ -189,6 +200,11 @@ interface Race {
   sfuConnectBy?: number;
   /** The racers' traffic was released (sfu_ready sent). */
   sfuReleased?: boolean;
+  /** A relay race: STATE and EVENT go over the room WebSocket and the room copies them to the
+      other racers, as before the SFU (protocol 3). Chosen at the start when this server has no
+      Realtime credentials, a racer's game has no WebRTC, or a racer's session isn't connected:
+      everyone in a race uses one transport, as the room can't bridge the SFU and its sockets. */
+  relay?: boolean;
   /** The start message's players, kept for a racer whose rejoin missed the start (finding 175). */
   players?: StartPlayer[];
 }
@@ -416,7 +432,7 @@ export class Room extends DurableObject<Env> {
     // closed.
     let t = this.tallies.get(ws);
     if (!t) this.tallies.set(ws, (t = newTally(now)));
-    const verdict = tally(t, typeof msg !== "string", now, this.caps());
+    const verdict = tally(t, typeof msg !== "string", now, this.relayRacer(ws) ? this.relayCaps() : this.caps());
     if (verdict !== "ok") {
       if (verdict === "warn") this.error(ws, "too_fast", TOO_FAST_WARNING);
       if (verdict === "close") {
@@ -451,6 +467,7 @@ export class Room extends DurableObject<Env> {
     if (!st || !me) return;
     const isHost = st.hostId === me.id;
 
+    if (m.type.startsWith("sfu_") && (!this.sfuOn() || me.noSfu)) return;  // relay only: nothing to set up
     if (m.type.startsWith("sfu_")) {
       // Serialize across external awaits without holding the DO input gate. What touches only this
       // member's own session runs at once, in parallel with the others' (2026-11-07, finding 175):
@@ -697,6 +714,21 @@ export class Room extends DurableObject<Env> {
     const b = new Uint8Array(data);
     b[1] = slot;
     switch (b[0]) {
+      case FRAME_STATE:
+      case FRAME_EVENT: {
+        // A relay race (protocol 3's relay): to the race's other racers, in order.
+        if (!this.state?.race?.relay) return;
+        const socks = this.raceSockets;
+        for (let i = 0; i < socks.length; i++) {
+          const s = socks[i];
+          if (s !== null && s !== ws) {
+            try {
+              s.send(data);
+            } catch {}
+          }
+        }
+        return;
+      }
       case FRAME_PING: {
         if (n > 2 + PING_MAX_PAYLOAD) return;
         // The same bytes as PONG, then the server's clock (f64 ms, little-endian; protocol 4):
@@ -832,6 +864,7 @@ export class Room extends DurableObject<Env> {
     };
     member.region = info.region ?? "";
     member.raceRejoin = features.includes(FEATURE_RACE_REJOIN);
+    member.noSfu = features.includes(FEATURE_NO_SFU);
     if (!ghost) st.members.push(member);
     if (asHost) st.hostId = member.id;
     // A racer back in its race (finding 175): it raced on over the SFU meanwhile.
@@ -889,7 +922,8 @@ export class Room extends DurableObject<Env> {
       // Whether the room holds a Realtime session for this member (finding 177): "ready", its game
       // keeps its association if it has one (a rejoin), else offers a new session; "setup", none
       // here (a new member, or its session ended): its game offers one.
-      sfu: member.sfu && member.sfu.phase !== "failed" ? "ready" : "setup",
+      // "off": no Realtime here (no credentials) or no WebRTC in this game: its races are relayed
+      sfu: !this.sfuOn() || member.noSfu ? "off" : member.sfu && member.sfu.phase !== "failed" ? "ready" : "setup",
       // Back in a running race (finding 175): which one. A game that missed the race's start (its
       // hello names another race or none) gets the start again.
       ...(backInRace ? { race: { startAt: st.race!.startAt } } : {}),
@@ -1121,6 +1155,16 @@ export class Room extends DurableObject<Env> {
   /** The caps per member (src/guard.ts CAPS), worked out once per env (every message asks, the race
       relay's too). The tests change them through CAP_WINDOW_MS and CAP_BINARY (vitest.config.ts;
       a test may give a room a new env). */
+  /** A racer of a running relay race: its race frames come through this socket. */
+  private relayRacer(ws: WebSocket): boolean {
+    return !!this.state?.race?.relay && this.slotOf.has(ws);
+  }
+
+  private relayCaps(): Caps {
+    const caps = this.caps();
+    return { ...caps, binary: Math.max(caps.binary, RELAY_BINARY_PER_WINDOW) };
+  }
+
   private caps(): Caps {
     if (this.capsFor === this.env) return this.capsNow;
     const env = this.env as unknown as Record<string, unknown>;
@@ -1213,8 +1257,14 @@ export class Room extends DurableObject<Env> {
       startAt: now + START_LEAD_MS,
       sfuBy: now + this.sfuSetupMs(),
       sfuConnectBy: now + this.sfuConnectMs(),
+      relay: this.relayRace(racers),
       players: racers.map((x, slot) => ({ slot, memberId: x.id, name: x.name, rider: x.rider, bike: x.bike })),
     };
+    if (st.race.relay) {  // nothing to set up: the racers' frames go through this room at once
+      st.race.sfuReleased = true;
+      st.race.sfuBy = undefined;
+      st.race.sfuConnectBy = undefined;
+    }
     st.grid = undefined; st.gridRules = undefined;
     this.rebuildRace();
     await this.save();
@@ -1229,7 +1279,30 @@ export class Room extends DurableObject<Env> {
     // Racers whose sessions were up at the grid's lock are subscribed already (finding 177): their
     // games acknowledge at once. This pass adds what is still missing (a racer that connected
     // since) and closes the subscriptions of members sitting this race out.
-    this.kickSubscribe(true);
+    if (!race.relay) this.kickSubscribe(true);
+  }
+
+  /** How races travel (RACE_TRANSPORT): "sfu" always over Realtime (upstream's rule: a racer whose
+      WebRTC fails is out of the race), "relay" always over the room's sockets, "auto" (the default)
+      over Realtime when this server has its credentials and every racer's session is connected at
+      the start, else relayed, so a browser without WebRTC or a network that blocks it still races. */
+  private transport(): "sfu" | "relay" | "auto" {
+    const v = (this.env as unknown as Record<string, unknown>).RACE_TRANSPORT;
+    return v === "sfu" || v === "relay" ? v : "auto";
+  }
+
+  /** Realtime is used here: forced, or in auto mode with its app id and token configured. */
+  private sfuOn(): boolean {
+    const mode = this.transport();
+    if (mode !== "auto") return mode === "sfu";
+    const s = this.env as Env & SfuSecrets;
+    return !!(s.REALTIME_APP_ID && s.REALTIME_APP_TOKEN);
+  }
+
+  /** A race of these racers goes over the room's sockets (Race.relay). */
+  private relayRace(racers: Member[]): boolean {
+    if (!this.sfuOn()) return true;
+    return this.transport() === "auto" && racers.some((x) => x.noSfu || !x.sfuConnected);
   }
 
   /** The race's start for the racer in `slot`. */
@@ -1239,7 +1312,7 @@ export class Room extends DurableObject<Env> {
       return { slot: s, memberId: id, name: x?.name ?? "", rider: x?.rider ?? 0, bike: x?.bike ?? 0 };
     });
     return { type: "start", yourSlot: slot, track: race.track, laps: race.laps, seed: race.seed, players,
-      serverTime: now, startAt: race.startAt };
+      serverTime: now, startAt: race.startAt, transport: race.relay ? "relay" : "sfu" };
   }
 
   /** What a member back with its token missed while its socket was down, after the welcome. In

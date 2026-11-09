@@ -153,6 +153,9 @@ const config = {
   compatibility_date: server.compatibility_date, workers_dev: true, observability: { enabled: true },
   assets: { directory: './public', binding: 'ASSETS', run_worker_first: ['/v1/*', '/disc/*', '/disc-data/*', '/site.json'] },
   vars, r2_buckets: r2, durable_objects: server.durable_objects, migrations: server.migrations,
+  // the abuse guard's limits per address and its daily cleanup (finding 161); the moderation
+  // database is the operator's own (online/server/README.md) and optional
+  ratelimits: server.ratelimits, triggers: server.triggers,
 };
 fs.writeFileSync(path.join(out, 'wrangler.jsonc'), JSON.stringify(config, null, 2));
 if (args.has('--dry-run')) { console.log(`deploy: staged in ${path.relative(root, out)} (dry run)`); process.exit(0); }

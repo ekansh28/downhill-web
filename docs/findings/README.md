@@ -222,6 +222,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 196 | [The browser's sockets and voice chat in a worker of their own](196-browser-net-voice-worker.md) | current |  |
 | 197 | [the browser's VU1 and GS workers: already split; what limits the race now](197-browser-vu1-gs-split.md) | current |  |
 | 198 | [the browser's VU1 already runs entirely in AOT blocks and native kernels](198-browser-vu1-coverage.md) | current |  |
+| 199 | [relay races: one race, one transport, the room WebSocket when Realtime can't carry it](199-relay-races.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

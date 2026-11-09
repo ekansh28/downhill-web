@@ -24,6 +24,8 @@ export default defineConfig(async () => {
           bindings: {
             MIN_VERSION: "0.2.0",
             COUNTDOWN_MS: "300",
+            // Races over Realtime as upstream has them; the relay tests set "auto" or "relay" themselves.
+            RACE_TRANSPORT: "sfu",
             COLO_PROBE: "off",
             CAP_WINDOW_MS: "1000",
             IP_HASH_KEY: "test-ip-hash-key",

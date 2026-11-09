@@ -199,4 +199,8 @@ export default {
       return discJson({ server: "same-origin", disc: !!env.DISC_KEY });
     return env.ASSETS.fetch(request);
   },
+  // the server's daily cleanup of the moderation log (finding 161; nothing without its database)
+  async scheduled(controller: ScheduledController, env: HostEnv, ctx: ExecutionContext): Promise<void> {
+    await server.scheduled(controller, env, ctx);
+  },
 } satisfies ExportedHandler<HostEnv>;

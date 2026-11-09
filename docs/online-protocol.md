@@ -256,6 +256,16 @@ callbacks are delivered on one network thread, so the game sees start before buf
 each start the client begins that race's own state (the racers, the acknowledgement, queued
 frames, flood counters); the association and its channels stay.
 
+### Relay races (this fork, finding 199)
+
+A race's `start` carries `"transport": "sfu"` or `"relay"`. In a relay race STATE and EVENT go
+on the room WebSocket, without the 8-byte race prefix, and the room copies each to the race's
+other racers with byte 1 set to the sender's slot; nothing is set up on the SFU. The room relays a
+race when the Worker's `RACE_TRANSPORT` is `relay`, or, in `auto` (the default), when it has no
+Realtime credentials, a racer's hello listed `no_sfu`, or a racer's session isn't connected at the
+start. `sfu` keeps upstream's rule. A welcome with `"sfu": "off"` means no Realtime for this
+member: its game makes no session and the room ignores its `sfu_*` messages.
+
 ### SFU signaling (private JSON on the room WebSocket)
 
 A member's session lives as long as its stay in the room (finding 177):
