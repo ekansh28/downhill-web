@@ -85,6 +85,41 @@ for (const m of modules) {
   fs.writeFileSync(path.join(pub, 'build', m), m.endsWith('.wasm') ? withoutNames(bytes) : bytes);
 }
 // The page needs cross-origin isolation (SharedArrayBuffer); a new build is fetched again, never mixed.
+// The link preview (site.local.json "embed", optional): what a chat app shows for the site's link
+// (Open Graph and Twitter card tags in index.html, and the card image). The texts and the image are
+// the site owner's and stay out of the repository (port/web/host/embed/ is ignored):
+//   "embed": { "url": "https://<site>", "title": "...", "description": "...", "image": "embed/card.png",
+//              "siteName": "...", "color": "#ffc65a" }
+if (site.embed) {
+  const e = site.embed, esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  if (!e.url || !e.title || !e.description) die('site.local.json: embed needs url, title and description');
+  const base = e.url.replace(/\/+$/, ''), tags = [];
+  const meta = (attr, key, value) => tags.push(`<meta ${attr}="${key}" content="${esc(value)}">`);
+  meta('property', 'og:type', 'website');
+  meta('property', 'og:url', `${base}/`);
+  meta('property', 'og:title', e.title);
+  meta('property', 'og:description', e.description);
+  if (e.siteName) meta('property', 'og:site_name', e.siteName);
+  if (e.image) {
+    const image = path.resolve(here, e.image);
+    if (!fs.existsSync(image)) die(`site.local.json: embed.image ${e.image} is missing`);
+    const ext = path.extname(image).toLowerCase() || '.png';
+    fs.copyFileSync(image, path.join(pub, `preview${ext}`));
+    meta('property', 'og:image', `${base}/preview${ext}`);
+    meta('property', 'og:image:alt', e.title);
+    meta('name', 'twitter:card', 'summary_large_image');
+    meta('name', 'twitter:image', `${base}/preview${ext}`);
+  }
+  meta('name', 'twitter:title', e.title);
+  meta('name', 'twitter:description', e.description);
+  const page = path.join(pub, 'index.html');
+  let html = fs.readFileSync(page, 'utf8');
+  html = html.replace(/<title>[^<]*<\/title>/, `<title>${esc(e.title)}</title>`)
+    .replace(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${esc(e.description)}">\n${tags.join('\n')}`);
+  if (e.color) html = html.replace(/<meta name="theme-color" content="[^"]*">/, `<meta name="theme-color" content="${esc(e.color)}">`);
+  fs.writeFileSync(page, html);
+  console.log(`deploy: link preview "${e.title}"${e.image ? ' with its card' : ''}`);
+}
 fs.writeFileSync(path.join(pub, '_headers'), [
   '/*', '  Cross-Origin-Opener-Policy: same-origin', '  Cross-Origin-Embedder-Policy: require-corp',
   '  Cross-Origin-Resource-Policy: same-origin', '  Cache-Control: no-cache', ''].join('\n'));

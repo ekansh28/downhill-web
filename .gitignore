@@ -93,3 +93,5 @@ discord_social_sdk/
 
 # The self-hosted browser site's own settings (port/web/host/deploy.mjs): buckets, image, private key
 port/web/host/site.local.json
+# its link preview (site.local.json "embed"): the card and logo are the site owner's, never committed
+port/web/host/embed/
