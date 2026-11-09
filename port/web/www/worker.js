@@ -149,7 +149,7 @@ async function start(m) {
   // microphone and voice rings (main.js), and the page told when the game wants the microphone.
   const net = await createNet(netBytes, { bytes: (a, n) => span(a, n), strlen: a => { if (bytes.buffer !== memory.buffer) refresh();
     const at = fold(a); return bytes.indexOf(0, at) - at; } }, say,
-    { env, input: m.input, mic: m.mic || null, voice: m.voice || null, voiceBytes,
+    { env, input: m.input, mic: m.mic || null, voice: m.voice || null, voiceBytes, sfuPort: m.sfuPort || null,
       wantMic: (on, device) => post('mic', { on, device }), room: code => post('room', { code, inRoom: !!code }) });
   micNames = m.micNames || [];
   micAnswer = state => net.voiceMic(state);

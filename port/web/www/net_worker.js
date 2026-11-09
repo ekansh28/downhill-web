@@ -20,6 +20,11 @@
 //   silent racer (room.ts RACE_SILENT_MS); its pong reaches the client as any other, a true round
 //   trip on the game's clock.
 //
+// WebRTC (finding 200): with the page's SFU module (sfu.js, over m.sfuPort), the room's signalling
+// (welcome, start, ended, sfu_*) is copied to it, and in a race it routes (an SFU race) the game's
+// STATE and EVENT frames go to it instead of the socket; the frames it got over the SFU come back
+// here and go on as if the socket had brought them (voice to its decoder, the rest to the game).
+//
 // Voice chat (finding 183; port/host/voice.c with libopus, dhd_voice.wasm) runs here too. Its
 // packets come straight from the socket (while the game races, as client.c's net_voice_hook);
 // every TICK_MS the others' voices are mixed, at the gain and pan the game last gave each slot
@@ -55,6 +60,11 @@ async function start(m) {
   }
   function flush() { while (waiting.length && events.push(...waiting[0])) waiting.shift(); }
 
+  // ---- the page's SFU module (sfu.js) ----
+  const sfu = m.sfuPort || null;
+  let sfuRace = false;  // this race's frames go over the SFU (the module says, at its start)
+  const SIGNAL = /^\{"type":"(welcome|start|ended|error|sfu_[a-z_]+)"/;
+
   // ---- the sockets ----
   const sockets = new Map(); let current = 0, sentAt = 0, aliveAt = 0;
   const racing = () => Atomics.load(shared, W.racing) !== 0;
@@ -71,20 +81,35 @@ async function start(m) {
           let s; try { s = JSON.parse(e.data).s; } catch {}
           if (Number.isInteger(s)) { ws.send(`{"type":"pong","s":${s}}`); Atomics.add(shared, W.pongs, 1); tell(OP.ALIVE, sock, 0, null, t); return; }
         }
+        if (sfu && SIGNAL.test(e.data)) sfu.postMessage({ kind: 'signal', text: e.data });
         tell(OP.TEXT, sock, 0, enc.encode(e.data), t);
         return;
       }
-      const data = new Uint8Array(e.data);
+      arrived(sock, new Uint8Array(e.data), t);
+    };
+    ws.onclose = e => { sockets.delete(sock); if (current === sock) current = 0; tell(OP.CLOSED, sock, e.code, enc.encode(e.reason || '')); };
+  }
+  // A race frame from the socket or the SFU: voice to its decoder, the rest to the game.
+  function arrived(sock, data, t) {
       if (data.length >= 4 && data[0] === NET_FRAME_EVENT && data[2] === VOICE_VERSION && data[3] === VOICE_KIND) {
         if (racing() && voice) hear(data[1], data.subarray(2));
         if (t - aliveAt >= ALIVE_MS) { aliveAt = t; tell(OP.ALIVE, sock, 0, null, t); }
         return;
       }
       tell(OP.BINARY, sock, 0, data, t);
-    };
-    ws.onclose = e => { sockets.delete(sock); if (current === sock) current = 0; tell(OP.CLOSED, sock, e.code, enc.encode(e.reason || '')); };
   }
+  if (sfu) sfu.onmessage = e => { const s = e.data;
+    if (s.kind === 'text') { const ws = sockets.get(current); if (ws?.readyState === 1) ws.send(s.text); }
+    else if (s.kind === 'route') sfuRace = !!s.sfu;
+    else if (s.kind === 'frame' && current) arrived(current, new Uint8Array(s.data), gameNow());
+  };
   function send(sock, data, binary) {
+    if (binary && sfuRace && (data[0] === 5 || data[0] === 6)) {  // an SFU race's frame: the page sends it
+      const copy = data.slice();
+      sfu.postMessage({ kind: 'frame', data: copy.buffer }, [copy.buffer]);
+      sentAt = gameNow();
+      return true;
+    }
     const ws = sockets.get(sock);
     if (ws?.readyState !== 1) return false;
     ws.send(binary ? data : dec.decode(data));

@@ -138,16 +138,20 @@ void client_connected(NetClient *c, const NetTransport *tr)
     /* clientVersion: this release (port/include/version.h), for the server's version gate */
     /* features: this client shows the race room's countdown (the server runs one only when
        everyone's does); race_rejoin: it races on over the SFU while its room connection is down
-       and rejoins its race (finding 175); no_sfu (the browser's build, whose transport has no
-       WebRTC yet): its races go over the room WebSocket (relay races, finding 199) */
+       and rejoins its race (finding 175); no_sfu (a browser without WebRTC): its races go over
+       the room WebSocket (relay races, finding 199) */
+#define NET_FEATURES_SFU "[\"countdown\",\"session\",\"race_rejoin\"]"
 #if defined(__wasm__)
-#define NET_FEATURES "[\"countdown\",\"session\",\"race_rejoin\",\"no_sfu\"]"
+    /* the browser: WebRTC only when its page has it (DHD_NET_SFU=1, main.js and sfu.js, finding 200) */
+    const char *sfu_env = getenv("DHD_NET_SFU");
+    const char *features = sfu_env && !strcmp(sfu_env, "1") ? NET_FEATURES_SFU
+                         : "[\"countdown\",\"session\",\"race_rejoin\",\"no_sfu\"]";
 #else
-#define NET_FEATURES "[\"countdown\",\"session\",\"race_rejoin\"]"
+    const char *features = NET_FEATURES_SFU;
 #endif
     say(c, "{\"type\":\"hello\",\"protocol\":%d,\"version\":\"%s\",\"clientVersion\":\"%s\",\"isoSha256\":\"%s\","
-        "\"name\":\"%s\",\"features\":" NET_FEATURES "%s%s}", NET_PROTOCOL, c->version,
-        DHD_VERSION, c->iso, name, install, token);
+        "\"name\":\"%s\",\"features\":%s%s%s}", NET_PROTOCOL, c->version,
+        DHD_VERSION, c->iso, name, features, install, token);
     if (!c->racing && c->lobby.state != NET_RECONNECTING)
         c->lobby.state = NET_CONNECTING;
     changed(c);

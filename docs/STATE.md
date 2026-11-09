@@ -160,7 +160,8 @@ findings 180-198 (renumbered from 127-146 when 0.7.13 came in; finding 192's rej
 rebinding gave way to upstream's 137/175 and 157):
 - Browser online (findings 190, 196): the real C client (`dhd_net.wasm`) over the page's own
   net worker, not upstream's switched-off `net.js`; `host_service_net_offered` is 1 there.
-  Race frames over the room WebSocket today; WebRTC to the SFU as on the PC is the next step.
+  Races over the SFU from the page's own WebRTC (finding 200), or relayed by the room when a racer
+  can't (no Realtime credentials, no WebRTC, no connection: finding 199).
 - Voice chat in a race (finding 183): push-to-talk (V) or an open microphone, Opus in
   `EVENT_VOICE` frames, heard by distance and side; NAME - TALKING on the name tags, /MUTE NAME;
   REVIVED SETTINGS > Online has Voice Chat, Voice Mode, Microphone, Mic Volume, Voice Volume and

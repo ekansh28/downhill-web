@@ -4,6 +4,7 @@
 import { startSettings } from './settings.js';
 import { createTouch } from './touch.js';
 import { voiceRingBuffer } from './net_ring.js';
+import { startSfu } from './sfu.js';
 const $ = id => document.getElementById(id);
 const status = $('status'), log = $('log'), canvas = $('screen');
 const params = new URLSearchParams(location.search);
@@ -268,8 +269,12 @@ async function start(source) {
   };
   worker.onerror = e => addLog('worker error: ' + e.message);
   gameWorker = worker;
+  // WebRTC to the SFU (sfu.js, finding 200): on this page's thread, the net worker's partner
+  const sfuChannel = 'RTCPeerConnection' in window ? new MessageChannel() : null;
+  if (sfuChannel && !startSfu(sfuChannel.port1, addLog)) sfuChannel.port1.close();
   worker.postMessage({ type: 'start', ...source, canvas: offscreen, input, audio, mic, voice, displayHz: await hz,
-    monitorShape: screenShape(), micNames: await micNames(), lowEnd: lowEnd() }, [offscreen]);
+    monitorShape: screenShape(), micNames: await micNames(), lowEnd: lowEnd(), sfuPort: sfuChannel?.port2 || null },
+    sfuChannel ? [offscreen, sfuChannel.port2] : [offscreen]);
   const sendNames = async () => worker.postMessage({ type: 'mic-devices', names: await micNames() });
   navigator.mediaDevices?.addEventListener?.('devicechange', sendNames);
   micChanged = sendNames;
@@ -373,6 +378,9 @@ $('invite').onclick = () => {
 // ?iso=test starts with it at once (headless checks; the ISO never leaves the machine).
 // ?env.NAME=value sets a DHD_* variable for the game (tests: DHD_NAV, DHD_RACE_PAD scripts).
 const env = Object.fromEntries([...params].filter(([k]) => k.startsWith('env.')).map(([k, v]) => [k.slice(4), v]));
+// WebRTC here: the online client may race over the SFU (sfu.js; client.c leaves no_sfu out of its hello).
+// ?env.DHD_NET_SFU=0 keeps this browser on relay races.
+if (typeof RTCPeerConnection === 'function' && !('DHD_NET_SFU' in env)) env.DHD_NET_SFU = '1';
 const room = (params.get('room') || '').toUpperCase();
 if (JOIN_CODE.test(room) && !('DHD_NET_ROOM' in env)) env.DHD_NET_ROOM = room;
 else if (room) addLog(`?room=${room}: not a join code (6 letters and digits)`);

@@ -63,7 +63,7 @@ export async function createNet(bytes, guest, say, host = {}) {
   let sentEnv = JSON.stringify(voiceEnv());
   worker.postMessage({ type: 'start', commands: commandsSab, events: eventsSab, shared: sharedSab, input: host.input || null,
     mic: host.mic || null, voiceRing: host.voice || null, voiceBytes: host.voiceBytes || null, env: voiceEnv(),
-    origin: performance.timeOrigin });
+    origin: performance.timeOrigin, sfuPort: host.sfuPort || null }, host.sfuPort ? [host.sfuPort] : []);
   let full = false;
   const command = (op, sock = 0, arg = 0, payload = null) => {
     if (commands.push(op, sock, 0, arg, payload)) return;

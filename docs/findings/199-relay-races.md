@@ -53,11 +53,7 @@ relay tests below, and the native game builds with the transport change.
 
 ## What is left
 
-- The browser's own WebRTC client (finding 190's net worker has none; `RTCPeerConnection` lives
-  only on the page's thread). Until then a browser racer makes its race a relay race, which is
-  what this line's site runs today. When it comes: Cloudflare forwards a subscriber's STATE
-  ordered and reliable (finding 173), which a browser's SCTP can't be patched around, so a lost
-  chunk can hold later snapshots up to Cloudflare's 1 s timer; several STATE channels per sender
-  would keep that to one channel's share.
+- The browser's own WebRTC client: done in finding 200; a browser without WebRTC (or with
+  `?env.DHD_NET_SFU=0`) still says `no_sfu` and gets a relay race.
 - A racer whose WebRTC drops mid-race in an SFU race is still out of it (upstream's rule); a relay
   race survives that, an SFU race doesn't switch.
