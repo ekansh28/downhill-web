@@ -24,6 +24,9 @@ const traceOff=args.includes('--trace-off'),timing=args.includes('--profile-impo
 // --from F: also report fields/s from field F on (e.g. the race only); --cpu-profile: a V8 CPU
 // profile of the same window in build/web/node.cpuprofile.
 const from=Number(option('--from','0')),cpuProfile=args.includes('--cpu-profile');
+// --disc-log PATH: every read of the disc image as "field offset length" lines (which blocks a
+// scene reads: the browser's disc download order, finding 194).
+const discLog=option('--disc-log',null);let discLogFd=null;
 let fromAt=null,session=null;
 // --game-speed: every 2 s of wall time in a race, its race clock (60 per game second) against wall
 // time: about 60 when the game runs at its own speed, lower in slow motion.
@@ -111,10 +114,12 @@ const impl={
   // graphics.c uses its existing immediate readback fallback.
   host_mem_protect:(_a,_n,protection)=>+(protection===2),host_callback_fault_guard:()=>0,host_fault_guard_here:()=>0,
   host_file_open:(a,mode)=>{try{const name=str(a);if(mode&8){const id=nextFile++;files.set(id,{fd:null,pos:0});return id;}
-    const fd=fs.openSync(name,mode&2?(mode&4?'w+':'r+'):'r');const id=nextFile++;files.set(id,{fd,pos:0});return id;
+    const fd=fs.openSync(name,mode&2?(mode&4?'w+':'r+'):'r');const id=nextFile++;files.set(id,{fd,pos:0,disc:!!discLog&&path.resolve(name)===path.resolve(env.DHD_ISO)});return id;
   }catch{return 0;}},
   host_file_close:id=>{const f=files.get(id);if(f?.fd!==null&&f)fs.closeSync(f.fd);files.delete(id);},
-  host_file_read:(id,a,n)=>{const f=files.get(id);if(!f||f.fd===null)return -1n;const got=fs.readSync(f.fd,span(a,n),0,n,f.pos);f.pos+=got;return BigInt(got);},
+  host_file_read:(id,a,n)=>{const f=files.get(id);if(!f||f.fd===null)return -1n;const got=fs.readSync(f.fd,span(a,n),0,n,f.pos);
+    if(f.disc){discLogFd??=fs.openSync(discLog,'w');fs.writeSync(discLogFd,`${field} ${f.pos} ${got}
+`);}f.pos+=got;return BigInt(got);},
   host_file_write:(id,a,n)=>{const f=files.get(id);if(!f)return 0;if(f.fd===null)return n;const got=fs.writeSync(f.fd,span(a,n),0,n,f.pos);f.pos+=got;return got;},
   host_file_seek:(id,off)=>{off=BigInt.asUintN(64,off);const f=files.get(id);if(!f||off>BigInt(Number.MAX_SAFE_INTEGER))return -1;f.pos=Number(off);return 0;},
   host_file_size:id=>{const f=files.get(id);return f?.fd!==null&&f?BigInt(fs.fstatSync(f.fd).size):0n;},

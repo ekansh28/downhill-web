@@ -175,7 +175,8 @@ rebinding gave way to upstream's 137/175 and 157):
 - Widescreen and the picture's shape apply at once (`port_widescreen_apply`); SETTINGS in the
   race's pause menu.
 - The self-hosted browser site (finding 194, `port/web/host`): the Worker serves the page, the
-  disc and is its own online server. Browser speed: findings 195-198 (the VU worker's AOT blocks
+  disc and is its own online server; in a room the streamed disc downloads that track's files
+  first (2026-11-10). Browser speed: findings 195-198 (the VU worker's AOT blocks
   are the race's limit).
 
 ## Checks and tools

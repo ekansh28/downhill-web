@@ -1,7 +1,7 @@
 # 194: A self-hosted browser site, a streamed disc and builds on C:
 
 Status: current
-Checked: 2026-11-09
+Checked: 2026-11-10
 
 2026-11-08. `port/web/host/` (README there), `www/disc_remote.js`, `www/disc_store.js`,
 `port/tools/drives.py`.
@@ -69,3 +69,59 @@ credits), starting at block 79.
 - Simulated over the real layout (`nextRun`): every block once, no run mixes the two kinds,
   1,051 MiB before the first movie block: about 5 minutes at 3.4 MiB/s instead of about 25 for
   the whole image at the old rate.
+
+## Track first (2026-11-10)
+
+Goal: in an online room whose track is known, that track's files download before anything else,
+so the first race there loads from the browser instead of streaming.
+
+What a race reads, measured: `port/web/run_headless.mjs --disc-log PATH` (new: every read of the
+image as field, offset, length) on a single race on each track (`DHD_RACE_SETUP=<track>`, the
+state trace's race navigation), the reads from the load screen (field 1228) to GO mapped to the
+image's files. Every track reads, between 10 and 21 MiB:
+- its level's files: `/LVL/<level>.*`, `/PTS/<level>.*` (a few small ones only in some modes),
+  `/RST/<level>.RST`; `<level>` is the game's own one-player level name for the track index
+  (`D_0026EE50`, online.c `TRACK_NAMES`), which deploy reads from the boot executable on the image;
+- its area's load screen `/LOADBAR/L<area>SE.*` and sound bank `/SND/<bank>.BNK` (ALP: `ALPS_S`,
+  AUB: `AUBE_S`, CITYMX, CITYTD and CITY their own, GLACIERT `GLACTD_S`, the rest the area's);
+- the riders, whatever the track: `/R/?NOS.*`, `/R/RANIM.NGA`, `/BIKE/*`, `/RST/*.RRS`, the
+  rider, pickup and pause banks (367 small files, 4.7 MiB; spread over about 25 blocks);
+- music: a HIGH stem pair (`/VAG/*HIGH-[LR].VAG`) or a `.VPK`, 1.5-6 MiB. Not tied to the track: the
+  same track with another `DHD_RACE_SEED` loaded another piece (PERU GHIGH, then EHIGH; MOAB
+  the other way round). Left to the generic fill, as is `/SKAT/DHSKAT.SKX` (a few KiB a second).
+
+Changes:
+- `port/web/host/disc_layout.mjs` (new; `deploy.mjs`'s ISO 9660 reading moved there): `discFiles`,
+  `movieBlocks`, `trackLevels` (the table from the executable), `trackFiles` and `raceFiles` (the
+  rules above as name patterns: no game data in the repository) and `trackBlocks`. `deploy.mjs`
+  publishes `DISC_TRACKS`, JSON `{"<track>": {level, blocks: "a-b,c"}}` (26 tracks, 2,993
+  characters); the Worker hands it out in `/info` as `tracks`, with `later`, on R2 sites too (only
+  for an image of the checked size).
+- `net.js` reads `NetLobby.track` (offset 140, which `net_web.c` now asserts with the join code's)
+  from the lobby copy the game asks for, and while in a room tells `worker.js`, which tells
+  `disc_remote.js` (`track(t)`), which posts `{type: 'priority', ranges, name}` to the store.
+- `disc_store.js`: three fill passes, the named track's blocks, the rest outside the movies, the
+  movies; a new track starts every search over (the old one's missing blocks are the generic fill's
+  again). The game's reads, read-ahead, the pause while riding and after a miss are unchanged. The
+  progress message carries the track's share (the page's disc line shows "the room's track first:
+  N%") and a log line says when it is all in the browser.
+- Bug found by the test and fixed: a fill run dropped for a game read went out of `inflight` a few
+  microtasks after the lane had already moved its search back, so the search skipped those blocks
+  as in flight and never fetched them in that session. `fetchRun` now settles after its blocks
+  leave `inflight` (and leaves a block the game asked again with its own request).
+
+Measured over the real layout (`disc_layout.mjs`, 256 KiB blocks): a track with its riders is
+38-87 blocks (9.5-21.8 MiB), 957 blocks for all 26. In the old order every track's last block
+(its sound bank, near the end of the non-movie part) came after 1,031-1,050 MiB, about 5 minutes
+at 3.4 MiB/s; now 3-6 s of fill. The measured race loads read 56-100 blocks each, of which all but
+the music and SKAT ones (14-27 blocks, 3-6 MiB) are in the track's set.
+
+Checks: `node port/web/check_disc_store.mjs` runs the real `disc_store.js` in node (its worker
+globals, OPFS and the site faked, zeros served), on a synthetic layout or `--iso PATH` the real one
+(`--track 3 --other 22`, 9,655 blocks, 13 s): with no track, every block once and the movies last;
+a track named while the fill runs comes next (only runs in flight between), a game read is fetched
+first and answered, nothing is filled while riding, a second track named halfway comes next and the
+first one's rest later, every block once in the end, the movies still last. Not tested: a real
+browser in a real room (no headless room-with-streamed-disc check exists yet); MOSH (23) and DUAL
+(21, not offered online): the headless single race on the arena stops with a memory fault at its
+load (`DHD_RACE_SETUP=23` forces the arena into a single race), so their area rules are by name.

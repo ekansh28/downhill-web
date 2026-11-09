@@ -14,6 +14,9 @@
 //   textures, music and riders are here in about half the time; then the movies. It pauses while the game is riding (the race's own
 //   reads and the online snapshots keep the line) and for a moment after each of the game's misses
 //   (a level is loading); the page can pause it too.
+// - Track first: in an online room the page names the room's track ({type: 'priority'}: its files'
+//   blocks, the site's `tracks`, deploy.mjs), and the fill takes those before anything else, so the
+//   race there loads from the browser. A new track replaces the old one.
 //
 // ctrl (Int32Array over the shared buffer): [0] state: 0 idle, 1 asked, 2 answered, 3 failed;
 // [1] the block asked for; [2] the answer's length. data: the block's bytes.
@@ -22,7 +25,11 @@
 const AHEAD = 16, AFTER_MISS_MS = 1500, NO_COPY_KEEP = 64, FILL_RUN = 16, FILL_LANES = 3, REQUEST_MS = 12000;
 let base, tag, size, BLOCK, count, ctrl, data;
 let copy = null, map = null, have = null, stored = 0, full = false;
-let riding = false, paused = false, lastMiss = 0, fillAt = 0, lateAt = 0, failures = 0, later = null;
+let riding = false, paused = false, lastMiss = 0, failures = 0, kind = null, priority = null, priorityName = null, priorityDone = false;
+// kind[i]: 1 outside the movies, 2 a movie's block (the site's `later`); priority: the track's blocks
+// (kind 0 while it is named). at[k]: where the fill's search for kind k is (everything of that kind
+// before it is here or in flight).
+const at = [0, 0, 0];
 const fills = new Set();  // the fill's requests in flight: a game's read aborts them
 const ahead = [], inflight = new Map(), spare = new Map();
 const bootOrder = [], bootSeen = new Set(), BOOT_MAX = 600;  // the game's first blocks, in order (deploy.mjs ships them)
@@ -76,15 +83,16 @@ function keep(first, blocks) {
   }
 }
 
+// Settles once its blocks are out of `inflight` (a dropped run's blocks are wanted again by then;
+// a block the game asked again in the meantime keeps its own request there).
 function fetchRun(first, n, signal) {
-  const p = download(first, n, signal).then(blocks => { keep(first, blocks); return blocks; });
+  const p = download(first, n, signal).then(blocks => { keep(first, blocks); return blocks; }), own = [];
   for (let k = 0; k < n; k++) {
     const q = p.then(blocks => blocks[k]);
     q.catch(() => {});
-    inflight.set(first + k, q);
+    inflight.set(first + k, q); own.push(q);
   }
-  p.catch(() => {}).finally(() => { for (let k = 0; k < n; k++) inflight.delete(first + k); });
-  return p;
+  return p.finally(() => { for (let k = 0; k < n; k++) if (inflight.get(first + k) === own[k]) inflight.delete(first + k); });
 }
 
 function load(i) {
@@ -134,20 +142,42 @@ async function serve() {
   }
 }
 
-// The next run of missing blocks to fill: [first, n], or null. Two passes over the image: first the
-// blocks outside the movies (later[i] 0), then the movies' (1); a run stays within one kind.
+// The next run of missing blocks to fill: [first, n], or null. Three passes over the image: the
+// named track's blocks (kind 0), the rest outside the movies (1), then the movies (2); a run stays
+// within one kind.
+const kindOf = j => (priority?.[j] ? 0 : kind[j]);
 function nextRun() {
   const wanted = j => have[j] !== 1 && !inflight.has(j);
-  for (const late of [0, 1]) {
-    let at = late ? lateAt : fillAt;
-    while (at < count && (!wanted(at) || (later ? later[at] : 0) !== late)) at++;
-    if (late) lateAt = at; else fillAt = at;
-    if (at >= count) continue;
+  for (let k = priority ? 0 : 1; k < 3; k++) {
+    let j = at[k];
+    while (j < count && (!wanted(j) || kindOf(j) !== k)) j++;
+    at[k] = j;
+    if (j >= count) continue;
     let n = 1;
-    while (n < FILL_RUN && at + n < count && wanted(at + n) && (later ? later[at + n] : 0) === late) n++;
-    return [at, n];
+    while (n < FILL_RUN && j + n < count && wanted(j + n) && kindOf(j + n) === k) n++;
+    return [j, n];
   }
   return null;
+}
+
+// "a-b,c" ranges as a mark per block (1 inside), or null when there are none.
+function blocksOf(ranges) {
+  let marks = null;
+  for (const part of String(ranges || '').split(',')) {
+    const r = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!r) continue;
+    marks ??= new Uint8Array(count);
+    for (let i = Number(r[1]); i <= Math.min(count - 1, Number(r[2] ?? r[1])); i++) marks[i] = 1;
+  }
+  return marks;
+}
+
+// The track's share already here (the page's progress line), or null when none is named.
+function trackProgress() {
+  if (!priority) return null;
+  let n = 0, here = 0;
+  for (let i = 0; i < count; i++) if (priority[i]) { n++; if (have?.[i] === 1) here++; }
+  return { name: priorityName, stored: here, count: n };
 }
 
 // read ahead (every lane) and fill (the first FILL_LANES, when the game isn't loading or riding)
@@ -166,13 +196,20 @@ async function background(lane) {
     fills.add(abort);
     try { await fetchRun(run[0], run[1], abort.signal); failures = 0; }
     catch { if (!abort.signal.aborted) await sleep(Math.min(30000, 1000 * 2 ** failures++)); }
-    finally { fills.delete(abort); }
+    // a run dropped or failed is behind the searches now: they look from it again
+    finally { fills.delete(abort); for (let k = 0; k < 3; k++) at[k] = Math.min(at[k], run[0]); }
   }
 }
 
 function progress() {
+  const track = trackProgress();
+  if (track && track.stored === track.count && !priorityDone && copy) {
+    priorityDone = true;
+    postMessage({ type: 'log', text: `disc: ${track.name || "the room's track"} is in this browser (${(track.count * BLOCK / 2 ** 20).toFixed(0)} MiB)` });
+  }
   postMessage({ type: 'progress', stored, count, block: BLOCK, kept: !!copy, filling: !!copy && !full && stored < count && !paused && !riding,
-    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local, boot: bootOrder.length });
+    net: stats.net, avgMs: stats.net ? stats.netMs / stats.net : 0, worstMs: stats.worst, local: stats.local, boot: bootOrder.length,
+    track });
   if (bootOrder.length) postMessage({ type: 'boot', order: bootOrder.slice() });
 }
 
@@ -180,15 +217,20 @@ onmessage = async e => {
   const m = e.data;
   if (m.type === 'riding') { riding = m.riding; return; }
   if (m.type === 'pause') { paused = m.paused; progress(); return; }
+  // the room's track (disc_remote.js): its blocks fill first; none (no ranges) ends that
+  if (m.type === 'priority') {
+    if (!count) return;
+    // the old track's blocks still missing are the generic fill's again: every search starts over
+    priority = blocksOf(m.ranges); priorityName = priority ? m.name ?? null : null; priorityDone = false; at.fill(0);
+    return;
+  }
   if (m.type !== 'open') return;
   ({ base, tag, size, block: BLOCK } = m); ctrl = new Int32Array(m.shared, 0, 4); data = new Uint8Array(m.shared, 16, BLOCK);
   count = Math.ceil(size / BLOCK);
   // the movies' blocks ("a-b,c" ranges from the site's /info): filled after everything else
-  later = new Uint8Array(count);
-  for (const part of String(m.later || '').split(',')) {
-    const r = /^(\d+)(?:-(\d+))?$/.exec(part);
-    if (r) for (let i = Number(r[1]); i <= Math.min(count - 1, Number(r[2] ?? r[1])); i++) later[i] = 1;
-  }
+  const movies = blocksOf(m.later);
+  kind = new Uint8Array(count).fill(1);
+  if (movies) for (let i = 0; i < count; i++) if (movies[i]) kind[i] = 2;
   let note = '';
   try {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('dhd-disc', { create: true });

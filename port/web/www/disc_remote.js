@@ -6,14 +6,15 @@
 //
 // The site's /info has the size, the tag (the image's version), the block size and the online disc
 // check worked out at deploy time (disc_check.mjs), which this browser can't do without the whole
-// image.
+// image; the movies' blocks (`later`) and each online track's (`tracks`: game track index ->
+// { level, blocks }), both read from the image's directory by deploy.mjs.
 
 const MEMORY = 96;    // blocks kept in memory here
 
 export async function createRemoteDisc(base, say, onProgress = () => {}, waitingOn = () => {}) {
   const got = await fetch(`${base}/info`, { cache: 'no-store' });
   if (!got.ok) throw Error(`the site's disc: ${got.status} ${(await got.text()).slice(0, 200)}`);
-  const { size, tag, block: BLOCK, check, later = '' } = await got.json();
+  const { size, tag, block: BLOCK, check, later = '', tracks = {} } = await got.json();
   if (!Number.isSafeInteger(size) || size <= 0 || !BLOCK) throw Error('the site sent no disc size');
 
   const shared = new SharedArrayBuffer(16 + BLOCK), ctrl = new Int32Array(shared, 0, 4), data = new Uint8Array(shared, 16, BLOCK);
@@ -57,13 +58,20 @@ export async function createRemoteDisc(base, say, onProgress = () => {}, waiting
   }
 
   say(`disc: ${(size / 2 ** 30).toFixed(2)} GiB from this site`);
-  let wasRiding = false;
+  let wasRiding = false, wasTrack = -1;
   return {
     size, check,
     progress: () => last,
     bootOrder: () => bootOrder,  // the game's first blocks this session (checks: recorded for deploy.mjs)
     riding(r) { if (r !== wasRiding) { wasRiding = r; store.postMessage({ type: 'riding', riding: r }); } },
     pause(p) { store.postMessage({ type: 'pause', paused: p }); },
+    // The online room's track (net.js, from the lobby; -1 none): its files download first.
+    track(t) {
+      if (t === wasTrack) return;
+      wasTrack = t;
+      const named = tracks?.[t];
+      store.postMessage({ type: 'priority', ranges: named?.blocks || '', name: named ? named.level : null });
+    },
     read(pos, out) {
       let done = 0;
       while (done < out.length && pos + done < size) {

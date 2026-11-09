@@ -150,7 +150,8 @@ async function start(m) {
   const net = await createNet(netBytes, { bytes: (a, n) => span(a, n), strlen: a => { if (bytes.buffer !== memory.buffer) refresh();
     const at = fold(a); return bytes.indexOf(0, at) - at; } }, say,
     { env, input: m.input, mic: m.mic || null, voice: m.voice || null, voiceBytes, sfuPort: m.sfuPort || null,
-      wantMic: (on, device) => post('mic', { on, device }), room: code => post('room', { code, inRoom: !!code }) });
+      wantMic: (on, device) => post('mic', { on, device }), room: code => post('room', { code, inRoom: !!code }),
+      track: t => disc.track?.(t) });  // the room's track: a streamed disc downloads its files first (disc_store.js)
   micNames = m.micNames || [];
   micAnswer = state => net.voiceMic(state);
   let core, graphics, queue, memory, bytes, dv, arena = 0x07000000, current = 65, csr = 0x1f80, field = 0;
