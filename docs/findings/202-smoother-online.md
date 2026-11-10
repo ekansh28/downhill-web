@@ -1,4 +1,4 @@
-# 202: smoother online races: two STATE channels, voice over the SFU, fewer relay races, later snapshots predicted
+# 202: smoother online races: voice over the SFU, fewer relay races, later snapshots predicted
 
 Status: current
 Checked: 2026-11-10
@@ -13,17 +13,17 @@ A player's 3-player browser race (2026-11-09): the other riders looked far behin
 had them ahead; with two players it looked live. Findings 199-201 and the room placement fix
 (commit 62a125c) explain most of it: one racer without WebRTC made the race a relay race, its
 frames through a room on another continent. Four changes make a race smoother when that happens
-and make it happen less.
+and make it happen less; a fourth idea (two STATE channels) measured worse and was dropped.
 
 ## Decisions
 
-1. **Two STATE channels** (`SFU_STATE_CHANNELS` "2", set by the site's deploy; one by default, as
-   upstream's tests count channels). Cloudflare forwards a subscriber's channels ordered and
-   reliable (finding 173), so a lost chunk holds the later messages of its channel until Cloudflare
-   resends it (its 1 s timer: the ~1.05 s gaps of finding 200). A sender takes its two STATE
-   channels in turn (`sfu.rs` `state_turn`, `sfu.js` `stateTurn`), so a lost chunk holds only every
-   second snapshot; the other channel's keep coming. Receivers take `state2` as `state`. The native
-   association's channel cap goes from 20 to 40 (three a racer).
+1. **One STATE channel, measured** (two were tried and removed). The idea: Cloudflare forwards a
+   subscriber's channels ordered and reliable (finding 173), so a lost chunk holds the later
+   messages of its channel until resent; a sender taking two STATE channels in turn would lose only
+   every second snapshot. Measured live (2026-11-10, `check_sfu.mjs`, 20 s, real Realtime app,
+   three interleaved runs each): one channel gave every snapshot with the longest delay 32-48 ms
+   and no gap over 250 ms; two channels gave delays up to 1,051 ms and gaps up to 1,017 ms. Two
+   channels made the stalls more frequent, not shorter, so the code was removed (one code path).
 2. **A short wait before a race is decided** (auto mode): a racer whose WebRTC session is still
    coming up (it offered, it hasn't failed) gets up to 3 s (`START_SFU_WAIT_MS`) before the room
    picks the race's transport, so a player who just joined doesn't make it a relay race.
@@ -41,7 +41,7 @@ and make it happen less.
 - Server: 202 tests (the relay race's voice, the SFU race's voice not copied to racers).
 - Native: `cargo test -p dhd_net`: 24 pass.
 
-## What is left
+## Surprises
 
-- The live comparison of one and two STATE channels (`check_sfu.mjs`, 20 s, the gaps over 250 ms
-  and the longest gap) on an idle machine.
+- Two STATE channels were worse, not better (decision 1). Each channel appears to stall on its
+  own, so with two a receiver hit a stall about twice as often.

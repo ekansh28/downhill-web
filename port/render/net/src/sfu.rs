@@ -129,7 +129,6 @@ pub struct Sfu {
     announced: bool,
     released: bool,
     /// Which of this game's STATE channels the next bundles go on (finding 202: two, in turn).
-    state_turn: usize,
     /// Voice frames (NET_FRAME_VOICE, 7) for the racers, on the STATE channels: loss is fine for
     /// voice, a wait behind a lost chunk is not (finding 202). At most VOICE_QUEUE, the oldest dropped.
     pending_voice: VecDeque<Vec<u8>>,
@@ -368,7 +367,7 @@ impl Sfu {
         if drop_in_percent > 0 { eprintln!("net: SFU: DHD_NET_SFU_DROP_IN={drop_in_percent}, that share of the SFU's records is dropped on arrival (test switch)"); }
         Ok((Self { rtc, pending: Some(pending), socket, local, inbox, reader_alive, reader_failed, stats: Stats::default(), channels: vec![], waiting: vec![], closing: vec![], orphans: vec![], slots: HashMap::new(),
             race: 0, race_open: false, me: None, started_at: None, created: Instant::now(), future_events: VecDeque::new(),
-            connected: false, announced: false, released: false, state_turn: 0, pending_voice: VecDeque::new(), drop_percent, sent: 0, drop_in_percent, records_in: 0, pending_events: VecDeque::new(), pending_state: HashMap::new(), rates: HashMap::new(),
+            connected: false, announced: false, released: false, pending_voice: VecDeque::new(), drop_percent, sent: 0, drop_in_percent, records_in: 0, pending_events: VecDeque::new(), pending_state: HashMap::new(), rates: HashMap::new(),
             wake, direct, turn_allowed, answered_at: None, connected_at: None, turn_asked: false, turn_first: false, turn_at: None, relay: None, last_in_relayed: false, via_relay: false,
             #[cfg(test)] probe: ProbeTimes::default() }, message))
     }
@@ -455,7 +454,7 @@ impl Sfu {
             let full = message["full"] == true;
             if full {
                 let listed: Vec<(u64, u64, bool, bool)> = channels.iter().filter_map(|c| {
-                    let state = match c["name"].as_str() { Some("state" | "state2") => true, Some("events") => false, _ => return None };
+                    let state = match c["name"].as_str() { Some("state") => true, Some("events") => false, _ => return None };
                     Some((c["channelId"].as_u64()?, c["memberId"].as_u64()?, state, c["local"].as_bool()?))
                 }).collect();
                 let mut gone: Vec<u16> = self.waiting.iter().filter(|w| !listed.contains(&(w.stream as u64, w.member, w.state, w.local)))
@@ -475,8 +474,7 @@ impl Sfu {
             }
             let known = |s: &Self, c: &Value| c["channelId"].as_u64().is_some_and(|id| s.has_stream(id));
             let new = if full { channels.iter().filter(|c| !known(self, c)).count() } else { channels.len() };
-            // 3 a member (two STATE channels, finding 202) for each of ten racers, its own included
-            if self.channels.len() + self.waiting.len() + new > 40 {
+            if self.channels.len() + self.waiting.len() + new > 20 {
                 return Err("Too many channels".into());
             }
             for c in channels {
@@ -487,7 +485,7 @@ impl Sfu {
                     .ok_or("Invalid channel ID")? as u16;
                 let name = c["name"]
                     .as_str()
-                    .filter(|s| *s == "state" || *s == "state2" || *s == "events")
+                    .filter(|s| *s == "state" || *s == "events")
                     .ok_or("Invalid channel name")?;
                 // A live channel of ours only: before the association is up str0m knows no
                 // stream ids yet, and a duplicate would panic inside it.
@@ -497,7 +495,7 @@ impl Sfu {
                 self.waiting.push(Waiting {
                     stream,
                     member: c["memberId"].as_u64().ok_or("Missing member")?,
-                    state: name != "events",
+                    state: name == "state",
                     local: c["local"].as_bool().ok_or("Missing direction")?,
                     since: Instant::now(),
                 });
@@ -684,13 +682,9 @@ impl Sfu {
                 self.started_at.map_or(0, |t| t.elapsed().as_millis()), self.slots.len(),
                 self.connected_at.map_or(0, |t| t.elapsed().as_secs()));
         }
-        // This game's STATE channels in turn (finding 202): one poll's bundles on one, the next on the other.
-        let own_states: Vec<u16> = { let mut s: Vec<u16> = self.channels.iter().filter(|c| c.local && c.state).map(|c| c.stream).collect(); s.sort(); s };
-        let state_stream = if own_states.is_empty() { None } else { Some(own_states[self.state_turn % own_states.len()]) };
-        if self.released && !self.pending_state.is_empty() { self.state_turn = self.state_turn.wrapping_add(1); }
         for state in [false, true] {
             if !self.released { break; }
-            if let Some(c) = self.channels.iter().find(|c| c.local && c.state == state && (!state || Some(c.stream) == state_stream)) {
+            if let Some(c) = self.channels.iter().find(|c| c.local && c.state == state) {
                 if let Some(mut channel) = self.rtc.channel(c.id) {
                     if state {
                         let mut sent = vec![];

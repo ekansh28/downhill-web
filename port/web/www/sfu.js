@@ -100,7 +100,7 @@ export function startSfu(port, say = () => {}, options = {}) {
 
   function open(a) {
     if (closing.has(a.channelId)) { waiting.set(a.channelId, a); return; }
-    const state = a.name !== 'events';  // state and state2 (finding 202): unordered, no retransmits
+    const state = a.name === 'state';
     const dc = pc.createDataChannel(a.name, { negotiated: true, id: a.channelId, ordered: !state, ...(state ? { maxRetransmits: 0 } : {}) });
     dc.binaryType = 'arraybuffer';
     const c = { ...a, dc, at: performance.now() };
@@ -172,7 +172,6 @@ export function startSfu(port, say = () => {}, options = {}) {
     frame[1] = p.slot;  // the sender's race slot, as the room stamps it on the socket
     port.postMessage({ kind: 'frame', data: frame }, [frame.buffer]);
   }
-  let stateTurn = 0;
   function send(frame) {
     if (!race) return;
     if (frame[0] === FRAME_VOICE && !released) return;  // voice is never held: it would play late
@@ -181,12 +180,10 @@ export function startSfu(port, say = () => {}, options = {}) {
       else if (heldEvents.length < HELD_EVENTS) heldEvents.push(frame);
       return;
     }
-    // STATE and voice on this game's STATE channels in turn (two, finding 202); EVENT on events
-    const onState = frame[0] === FRAME_STATE || frame[0] === FRAME_VOICE;
-    const mine = [...channels.values()].filter(x => x.local && x.memberId === me && x.dc.readyState === 'open' &&
-      (onState ? x.name !== 'events' : x.name === 'events')).sort((a, b) => a.channelId - b.channelId);
-    if (!mine.length) return;
-    const c = onState ? mine[stateTurn++ % mine.length] : mine[0];
+    // STATE and voice on the state channel (voice tolerates loss, finding 202); EVENT on events
+    const onState = frame[0] === FRAME_STATE || frame[0] === FRAME_VOICE, name = onState ? 'state' : 'events';
+    const c = [...channels.values()].find(x => x.local && x.memberId === me && x.name === name && x.dc.readyState === 'open');
+    if (!c) return;
     // A congested link: snapshots waiting in the channel are stale by the time they'd go, so keep at
     // most a few there (a stall on the live site queued 64 KiB, 5 s of them: riders 13 s late). The
     // newest one is the one worth sending; the next tick's will be newer still.
