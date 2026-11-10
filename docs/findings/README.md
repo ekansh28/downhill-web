@@ -227,6 +227,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 201 | [the browser races on a laptop's integrated GPU: a tip to switch](201-browser-laptop-gpu.md) | current |  |
 | 202 | [smoother online races: two STATE channels, voice over the SFU, fewer relay races, later...](202-smoother-online.md) | current |  |
 | 204 | [who is talking in the room, and more race feed lines](204-room-talking-and-feed.md) | current |  |
+| 206 | [the browser caps its own frame rate and resolution when the PC falls behind](206-auto-pace.md) | in progress |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

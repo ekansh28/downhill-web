@@ -264,7 +264,7 @@ async function start(source) {
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
     else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
     else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
-    else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`;
+    else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}${m.autoCap ? `  capped ${m.autoCap} fields/s` : ''}${m.autoScale ? `  auto ${m.autoScale}x` : ''}`;
       if (m.disc) discProgress(m.disc);
       if (m.discBoot) window.dhdDiscBoot = m.discBoot;  // deploy checks read it (disc boot list)
       document.title = `DHD ${m.fps.toFixed(1)} fps (field ${m.field})`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }

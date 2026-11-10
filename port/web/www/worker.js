@@ -25,7 +25,8 @@ import { createVfs } from './vfs.js';
 import { createRemoteDisc } from './disc_remote.js';
 import { thunks } from './thunks.js';
 import { createSettings, BROWSER_PC_SETTINGS, RENDERER_LIVE } from './settings.js';
-import { startRenderer, renderImports, definesSharedMemoryHead, shareSafeDecoding, Q, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
+import { startRenderer, renderImports, definesSharedMemoryHead, shareSafeDecoding, Q, Q2, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
+import { FramePacer, ScalePacer } from './auto_pace.js';
 
 const post = (type, data) => postMessage({ type, ...data });
 const say = text => post('log', { text });
@@ -193,6 +194,19 @@ async function start(m) {
   const sleeper = new Int32Array(new SharedArrayBuffer(4));  // pacing waits on it (never notified): a timer without setTimeout's clamping
   const yieldTask = () => new Promise(r => { wake = r; channel.port2.postMessage(0); });
   let period = 1000 / 59.94, due = performance.now(), shown = 0, lastReport = performance.now(), lastField = 0;
+  // Automatic pacing (auto_pace.js, finding 206). Only where the game's step follows real time
+  // (DHD_FPS_WALL=1, the browser's default; a deterministic run keeps the virtual clock and no pacer):
+  // `period` is what the game asked for (host_pacing_config), `capHz` the rate the pacer holds under it;
+  // DHD_AUTO_PACE=0 / DHD_AUTO_SCALE=0 (the page's ?env.) turn each off.
+  const autoWall = env.DHD_FPS_WALL === '1';
+  const autoPace = autoWall && env.DHD_AUTO_PACE !== '0', autoScale = autoWall && threaded && env.DHD_AUTO_SCALE !== '0';
+  const framePacer = new FramePacer(), scalePacer = new ScalePacer();
+  let askedPeriod = period, capHz = 0, workStart = performance.now(), workSum = 0, workFields = 0, gsBusy = 0, gsSamples = 0;
+  let userScale = null, drawnScale = null, warm = 0;   // the player's DHD_SCALE (null: not yet known), the one set here
+  // The graphics worker's state when a field is due (after the pacing wait): still on the last field's
+  // packets, or idle (its ring drained). Its share of fields over a second is how busy that worker is.
+  const gsPending = () => { const q2 = new Int32Array(memory.buffer, Q2, 128); return Atomics.load(q2, QI.written) !== Atomics.load(q2, QI.consumed); };
+  const scaleNumber = v => /^\d+$/.test(v ?? '') ? +v : NaN;
   let riding = 0, held = new Int8Array(KEYS.length);
   const stallSpec = /^(\d+)(?:,(\d+(?:\.\d+)?))?$/.exec(env.DHD_WEB_STALL || '');
   const stall = stallSpec ? { ms: +stallSpec[1], every: +(stallSpec[2] || 5) } : null;
@@ -282,7 +296,9 @@ async function start(m) {
   const impl = {
     host_getenv: a => env[str(a)] ? intern(env[str(a)]) : 0,
     host_putenv_s: (a, b) => { setEnv(str(a), str(b)); },
-    host_putenv: a => { const s = str(a), i = s.indexOf('='); setEnv(s.slice(0, i), s.slice(i + 1)); },
+    host_putenv: a => { const s = str(a), i = s.indexOf('='), name = s.slice(0, i);
+      if (name === 'DHD_SCALE') userScale = scaleNumber(s.slice(i + 1));   // the player's choice (PC SETTINGS), which auto resolution works under
+      setEnv(name, s.slice(i + 1)); },
     host_last_error: () => 0, host_exit: code => { throw new Exit(code); },
     host_error_box: (a, b) => { throw Error(`${str(a)}: ${str(b)}`); },
     host_exe_path: (a, n) => { const b = new TextEncoder().encode('/dhd.js\0'); span(a, n).set(b.subarray(0, n)); return Math.min(n - 1, b.length - 1); },
@@ -387,7 +403,7 @@ async function start(m) {
     // Online (net.js: port/net's client as dhd_net.wasm over the net worker's WebSocket).
     ...net,
     host_pacing_period: () => 1 / 60,
-    host_pacing_config: p => { period = p * 1000; },
+    host_pacing_config: p => { askedPeriod = p * 1000; period = capHz ? Math.max(askedPeriod, 1000 / capHz) : askedPeriod; },
     host_sound_write: (a, frames) => {
       soundFrames += frames;
       const src = new Int16Array(span(a, frames * 4).slice().buffer), h = ring.head, cap = ring.frames;
@@ -418,8 +434,24 @@ async function start(m) {
         stats = which => graphics.web_gpu_stats(which);
       }
       const now = performance.now();
+      workSum += now - workStart; workFields++;
       if (now - lastReport >= 1000) {
-        post('status', { field, fps: (field - lastField) * 1000 / (now - lastReport), shown, size: size ? `${size >>> 16}x${size & 0xffff}` : '-',
+        const fps = (field - lastField) * 1000 / (now - lastReport);
+        // the pacers' sample: skipped for the first seconds (loading, shader compiles) and when this window
+        // was not a second of running (a hidden tab, a long stall)
+        if (++warm > 15 && now - lastReport < 1500 && workFields) {
+          if (autoPace) { const hz = framePacer.sample(fps, workSum / workFields, 1000 / askedPeriod);
+            const cap = hz < 1000 / askedPeriod - 0.01 ? hz : 0;
+            if (cap !== capHz) { capHz = cap; period = cap ? Math.max(askedPeriod, 1000 / cap) : askedPeriod;
+              say(cap ? `pacing: capped at ${cap} fields/s (this PC holds about ${fps.toFixed(0)})` : 'pacing: cap lifted'); } }
+          if (autoScale && stats(4)) { userScale ??= env.DHD_SCALE === undefined ? stats(4) : scaleNumber(env.DHD_SCALE);
+            const level = scalePacer.sample(fps, gsSamples ? gsBusy / gsSamples : null, userScale);
+            if (level !== drawnScale && level !== stats(4) && Number.isFinite(level)) { drawnScale = level; setEnv('DHD_SCALE', String(level));
+              say(`resolution: ${level}x (${level < userScale ? 'the graphics are behind' : 'back to your setting'}; PC SETTINGS > Resolution is yours)`); } }
+        }
+        const gpuBusy = gsSamples ? +(gsBusy / gsSamples).toFixed(2) : null, work = workFields ? +(workSum / workFields).toFixed(1) : null;
+        workSum = workFields = gsBusy = gsSamples = 0;
+        post('status', { field, fps, autoCap: capHz, autoScale: drawnScale, gpuBusy, work, shown, size: size ? `${size >>> 16}x${size & 0xffff}` : '-',
           draws: stats(0), dispatches: stats(1), reads: stats(2), riding, sound: +(soundFrames / 48000).toFixed(1),
           renderer: 'rust', submits: stats(3), scale: stats(4), workers: threaded ? 3 : 1, disc: disc.progress?.() || null, discBoot: disc.bootOrder?.() || null,
           net: net.stats(), stalls });
@@ -432,6 +464,8 @@ async function start(m) {
         stallAt = performance.now() + stall.every * 1000; }
       due = Math.max(due + period, now - 4 * period);
       if (due > now + 1) await Atomics.waitAsync(sleeper, 0, 0, due - now).value; else await yieldTask();
+      workStart = performance.now();
+      if (threaded) { gsSamples++; if (gsPending()) gsBusy++; }
     }),
   };
   const noops = `host_sleep_ms host_wait_wall host_dpi_aware host_callbacks_drain host_frame_registers host_frame_video host_capture_name
