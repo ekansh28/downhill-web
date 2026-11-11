@@ -199,7 +199,13 @@ In words:
 
 - `test_puppet_sim` (the table above), `test_puppet_predict` (straight line, turn, small fade,
   large slow fade, large turn snapped, the carry's horizon, teleport snap): OK.
-- `python port/tools/test_runtime.py` and the race identity check: see Result.
+- `python port/tools/test_runtime.py` (after `build.py --web`): all pass, `puppet-predict` and
+  `puppet-sim` among them as guest programs.
+- Race identity (finding 203's command, no trace, the new build): `vu_steps 82315732`,
+  `vu_blocks 82315732`, `vu_native 4545648`, unchanged. A single-player race has no puppets, so
+  nothing outside them moved.
+- `python tools/check.py docs`: OK.
+- Not run: a live race (`check_net.mjs` / `check_sfu.mjs` against `wrangler dev`).
 
 ## Result
 
