@@ -226,6 +226,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 200 | [the browser races over Cloudflare Realtime SFU (WebRTC on the page's thread)](200-browser-webrtc.md) | current |  |
 | 201 | [the browser races on a laptop's integrated GPU: a tip to switch](201-browser-laptop-gpu.md) | current |  |
 | 202 | [smoother online races: voice over the SFU, fewer relay races, later snapshots predicted](202-smoother-online.md) | current |  |
+| 203 | [VIF1 UNPACK: the SIMD path for WL = CL too, a branchless mask setup](203-vif1-unpack-fast-paths.md) | current |  |
 | 204 | [who is talking in the room, and more race feed lines](204-room-talking-and-feed.md) | current |  |
 | 205 | [browsers use TURN over TLS when UDP to the SFU is blocked](205-browser-turn.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
