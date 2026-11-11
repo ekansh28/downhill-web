@@ -55,15 +55,16 @@ if (site.disc && (args.has('--new-key') || !site.disc.key)) {
 const link = () => site.disc && console.log(`private link: ${(site.embed?.url || `https://${name}.<your workers.dev subdomain>`).replace(/\/+$/, '')}/?disc=${site.disc.key}`);
 if (args.has('--link')) { link(); process.exit(0); }
 
-// A module without its "name" custom section (function names for profiles and stack traces: a
-// download players don't need). Nothing else changes, so the code is the same.
+// A module without its "name" and ".debug_*" custom sections (function names and DWARF for profiles,
+// stack traces and debuggers: a download players don't need). Nothing else changes, so the code is
+// the same.
 function withoutNames(b) {
   const leb = i => { let n = 0, sh = 0, x; do { x = b[i++]; n += (x & 127) * 2 ** sh; sh += 7; } while (x & 128); return [n, i]; };
   const keep = [b.subarray(0, 8)];
   for (let i = 8; i < b.length;) {
     const [size, at] = leb(i + 1), end = at + size;
     let drop = false;
-    if (b[i] === 0) { const [len, s0] = leb(at); drop = Buffer.from(b.subarray(s0, s0 + len)).toString() === 'name'; }
+    if (b[i] === 0) { const [len, s0] = leb(at); drop = Buffer.from(b.subarray(s0, s0 + len)).toString(); drop = drop === 'name' || drop.startsWith('.debug_'); }
     if (!drop) keep.push(b.subarray(i, end));
     i = end;
   }
