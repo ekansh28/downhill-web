@@ -24,8 +24,20 @@ describe("voice anywhere in the room", () => {
   it("50 frames a second for a few seconds without the guard's too_fast", async () => {
     const { host, code } = await Client.host("Ann");
     const bo = await Client.join(code, "Bo");
-    for (let i = 0; i < 300; i++) bo.ws.send(voice(i & 255));
-    for (let i = 0; i < 300; i++) expect((await host.binary())[4]).toBe(i & 255);
+    for (let s = 0; s < 3; s++) {  // a microphone's pace: 50 a second
+      for (let i = 0; i < 50; i++) bo.ws.send(voice((s * 50 + i) & 255));
+      if (s < 2) await new Promise((r) => setTimeout(r, 1000));
+    }
+    for (let i = 0; i < 150; i++) expect((await host.binary())[4]).toBe(i & 255);
     await expect(bo.next((f) => typeof f === "string" && JSON.parse(f).type === "error", 100)).rejects.toThrow("timed out");
+  });
+
+  it("a flood is cut at 75 a second, and only voice.c's packets pass", async () => {
+    const { host, code } = await Client.host("Ann");
+    const bo = await Client.join(code, "Bo");
+    bo.ws.send(new Uint8Array([7, 9, 1, 11, 0, 0, 1, 2]).buffer);  // not voice.c's version: dropped
+    for (let i = 0; i < 200; i++) bo.ws.send(voice(i & 255));
+    for (let i = 0; i < 75; i++) expect((await host.binary())[4]).toBe(i & 255);
+    await expect(host.next((f) => typeof f !== "string", 300)).rejects.toThrow("timed out");
   });
 });

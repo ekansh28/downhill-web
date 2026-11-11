@@ -126,6 +126,9 @@ const FEATURE_NO_SFU = "no_sfu";
 const RELAY_BINARY_PER_WINDOW = 2000;
 /** A voice frame's largest size: its header and one 20 ms Opus packet (voice.c VOICE_PACKET_MAX). */
 const VOICE_MAX_BYTES = 600;
+/** voice.c's packet: version and kind (bytes 2 and 3 of a FRAME_VOICE), and at most this many a second
+    from one member (one each 20 ms, with room for a burst after a stall). */
+const VOICE_VERSION = 2, VOICE_KIND = 11, VOICE_PER_SECOND = 75;
 /** How long a race's start waits for a racer whose WebRTC session is still connecting. */
 const START_SFU_WAIT_MS = 3000;
 /** The same when TURN keys exist: a browser's TURN retry (finding 205) takes about 2 s plus its setup. */
@@ -310,6 +313,10 @@ export class Room extends DurableObject<Env> {
   private cleanup: Cleanup[] = [];
   private state: RoomState | null = null;
   private sockets = new Map<number, WebSocket>();
+  /** A race start waiting for connecting racers (startRace): the room counts as started meanwhile. */
+  private starting = false;
+  /** Voice packets this second, per member (relayVoice). */
+  private voiceRate = new Map<number, { at: number; count: number }>();
   /** Round-trips from our pings, per member. Memory only; re-measured after a wake-up. */
   private rtts = new Map<number, number[]>();
   /** When each member's recent chat messages went out (CHAT_BURST in CHAT_WINDOW_MS). */
@@ -510,6 +517,7 @@ export class Room extends DurableObject<Env> {
         return;
       case "settings":
         if (!isHost) return this.error(ws, "not_host", "Only the host can change the settings.");
+        if (this.starting) return this.error(ws, "room_started", "The race is starting.");
         if (st.race && (!st.session || (this.inRace(st, me.id) && st.race.results!.find(x => x.id === me.id)?.ticks === undefined))) return this.error(ws, "room_started", "The race is running.");
         return this.onSettings(ws, st, m);
       case "pick":
@@ -731,6 +739,12 @@ export class Room extends DurableObject<Env> {
     const st = this.state;
     const id = (ws.deserializeAttachment() as SocketInfo | null)?.memberId;
     if (!st || id == null || data.byteLength < 6 || data.byteLength > VOICE_MAX_BYTES) return;
+    const head = new Uint8Array(data, 0, 4);
+    if (head[2] !== VOICE_VERSION || head[3] !== VOICE_KIND) return;  // voice.c's packet, nothing else
+    // A microphone sends a packet each 20 ms: at most VOICE_PER_SECOND a member, the rest dropped
+    const now = Date.now(), rate = this.voiceRate.get(id);
+    if (!rate || now - rate.at >= 1000) this.voiceRate.set(id, { at: now, count: 1 });
+    else if (++rate.count > VOICE_PER_SECOND) return;
     let slot: number;
     if (st.race) {
       const racer = st.race.slots.indexOf(id);
@@ -742,9 +756,10 @@ export class Room extends DurableObject<Env> {
     b[1] = slot;
     // In an SFU race a racer's voice reaches the other racers over the SFU (sooner, finding 202): the
     // room passes it only to the members outside the race. A relay race's racers get it here.
-    const sfuRacer = !!st.race && !st.race.relay && st.race.slots.includes(id);
+    // (inRace: a racer who left the race has no SFU subscriptions any more: it hears the room's copy)
+    const sfuRacer = !!st.race && !st.race.relay && this.inRace(st, id);
     for (const [member, s] of this.sockets)
-      if (member !== id && !(sfuRacer && st.race!.slots.includes(member)))
+      if (member !== id && !(sfuRacer && this.inRace(st, member)))
         try {
           s.send(data);
         } catch {}
@@ -882,7 +897,7 @@ export class Room extends DurableObject<Env> {
     // socket) gets its member again: id, host, rider, Ready and race place included (finding 137).
     const ghost = asHost ? undefined : this.rejoinOf(st, m.rejoinToken);
     if (!asHost) {
-      if (st.race && !st.session) return this.refuse(ws, "room_started", "The race has already started.");
+      if ((st.race || this.starting) && !st.session) return this.refuse(ws, "room_started", "The race has already started.");
       if (version !== st.version)
         return this.refuse(ws, "version_mismatch", `The host runs "${st.version}", you run "${version}".`);
       if (iso !== st.isoSha256)
@@ -1299,7 +1314,8 @@ export class Room extends DurableObject<Env> {
 
     // Host first, then join order.
     // Members away after a drop (finding 137) don't race: their game isn't here to start.
-    const racers = st.members.filter(x => this.sockets.has(x.id) && (!st.session || st.grid?.includes(x.id))).sort((a, b) => Number(b.id === st.hostId) - Number(a.id === st.hostId));
+    const grid = () => st.members.filter(x => this.sockets.has(x.id) && (!st.session || st.grid?.includes(x.id))).sort((a, b) => Number(b.id === st.hostId) - Number(a.id === st.hostId));
+    let racers = grid();
     // auto (finding 202): a racer whose WebRTC session is still coming up (it offered, it hasn't
     // failed, it isn't connected yet: a player who just joined) gets up to START_SFU_WAIT_MS before
     // its race is decided, so one slow connection doesn't send the whole race through this room.
@@ -1308,9 +1324,17 @@ export class Room extends DurableObject<Env> {
       // With TURN keys a browser that can't connect directly retries through TURN after 2 s (finding 205):
       // the wait covers that retry too.
       const wait = (this.env as Env & SfuSecrets).TURN_KEY_ID ? START_SFU_WAIT_TURN_MS : START_SFU_WAIT_MS;
-      for (let waited = 0; waited < wait && connecting().length; waited += 100)
-        await new Promise((r) => setTimeout(r, 100));
+      if (this.starting) return;  // another start is already waiting
+      // Meanwhile the room counts as started: no one joins, the host changes nothing (onHello, settings).
+      this.starting = true;
+      try {
+        for (let waited = 0; waited < wait && connecting().length; waited += 100)
+          await new Promise((r) => setTimeout(r, 100));
+      } finally { this.starting = false; }
       if (st !== this.state || st.race) return;
+      // Who left, was kicked or dropped out of the grid during the wait doesn't race.
+      racers = grid();
+      if (!racers.length) { st.grid = undefined; st.gridRules = undefined; await this.save(); this.broadcastRoom(); return; }
     }
     const now = Date.now();
     st.race = {
