@@ -164,6 +164,8 @@ Profiles, self time:
   made it more likely (base: 0 of 12 runs, A: 1 of 6). The renderer was not changed here. A fix
   would reset the map context on a failed map too (in the browser, `unmap()` on an unmapped
   buffer is a no-op; check wgpu-core natively first) and needs the renderer's own checks.
+  Fixed after the merge (2026-11-12): wgpu-core 29 answers `unmap()` on an idle buffer with
+  `NotMapped`, so `zread_take` gives a slot whose map failed a fresh read buffer instead.
 - Any change to `web_queue.c` outside its GS-only branch changes the cache key of the whole
   `vu.wasm` module (objcache's "whole modules"). `vu0_interp.c` with the VU1 AOT blocks then
   compiles again: 30-35 minutes of one core on this PC. B touches only the GS branch, so

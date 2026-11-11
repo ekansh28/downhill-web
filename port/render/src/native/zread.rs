@@ -234,6 +234,7 @@ impl Native {
         let newest = self.zread.slots.iter().filter(|s| done(s)).map(|s| s.tag).max();
         let Some(newest) = newest else { return 0 };
         let mut taken = 0;
+        let gpu = self.gpu;
         for s in self.zread.slots.iter_mut() {
             if !done(s) || s.tag > newest {
                 continue;
@@ -261,6 +262,13 @@ impl Native {
             }
             if ok {
                 s.read.unmap();
+            } else {
+                // wgpu clears a buffer's map state only in unmap(), which a buffer whose map failed
+                // can't take (wgpu-core: NotMapped). Without a fresh buffer the slot's next map
+                // panics ("Buffer is already mapped", seen once in a browser race, finding 211).
+                s.read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("native zread map"), size: BYTES,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             }
             s.status = None;
         }
