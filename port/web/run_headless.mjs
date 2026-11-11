@@ -22,8 +22,12 @@ const prefix=path.resolve(option('--trace',path.join(root,'build/web/boot')));
 const fields=Number(option('--fields','600'));
 const traceOff=args.includes('--trace-off'),timing=args.includes('--profile-imports');
 // --from F: also report fields/s from field F on (e.g. the race only); --cpu-profile: a V8 CPU
-// profile of the same window in build/web/node.cpuprofile.
-const from=Number(option('--from','0')),cpuProfile=args.includes('--cpu-profile');
+// profile of the same window in build/web/node.cpuprofile. --cpu-profile-vu: a profile of the VU
+// worker (VIF1/VU1, vu.wasm) from its start, build/web/vu.cpuprofile, with the wall time (Date.now)
+// of the profile's start and of field --from beside it (vu.cpuprofile.json; vu_profile.py cuts the
+// window; finding 209). node --no-wasm-inlining keeps the AOT blocks apart from the run loop.
+const from=Number(option('--from','0')),cpuProfile=args.includes('--cpu-profile'),cpuProfileVu=args.includes('--cpu-profile-vu');
+let fromWall=null;
 // --disc-log PATH: every read of the disc image as "field offset length" lines (which blocks a
 // scene reads: the browser's disc download order, finding 194).
 const discLog=option('--disc-log',null);let discLogFd=null;
@@ -88,7 +92,7 @@ const impl={
   // deterministic virtual clock.
   host_wall_seconds:env.DHD_FPS_WALL==='1'?()=>performance.now()/1000:()=>field/60,host_cycles:()=>0n,
   host_fp_csr:getCsr,host_fp_set_csr:setCsr,host_fp_mode:x=>{setCsr(x?0xffc0:0x1f80);},
-  host_frame_context:(f)=>{field=Number(f);if(gameSpeed)gameSpeed();if(fromAt===null&&field>=from){fromAt=performance.now();if(cpuProfile){session=new (await_inspector()).Session();session.connect();session.post('Profiler.enable');session.post('Profiler.setSamplingInterval',{interval:500});session.post('Profiler.start');}}if(queue)queue.web_q_frame(f);else graphics.web_frame(f);if(field%100===0)console.error(`web field ${field}`);if(traceOff&&field>=fields)throw new Exit(0);},
+  host_frame_context:(f)=>{field=Number(f);if(gameSpeed)gameSpeed();if(fromAt===null&&field>=from){fromAt=performance.now();fromWall=Date.now();if(cpuProfile){session=new (await_inspector()).Session();session.connect();session.post('Profiler.enable');session.post('Profiler.setSamplingInterval',{interval:500});session.post('Profiler.start');}}if(queue)queue.web_q_frame(f);else graphics.web_frame(f);if(field%100===0)console.error(`web field ${field}`);if(traceOff&&field>=fields)throw new Exit(0);},
   host_fiber_main:()=>{if(!fibers.has(65))fibers.set(65,{sp:core.__stack_pointer.value,csr:getCsr(),started:true});return 65;},
   host_fiber_current:()=>current,
   host_callback_fiber:(fn,ctx)=>{if(!core.__indirect_function_table.get(fn))throw Error('null callback');
@@ -196,7 +200,7 @@ if(threaded){
   direct.forEach((n,i)=>table.set(i,queue['web_x_'+n]));
   // the GS thread first: the VU thread's web_vq_init needs its queue
   const thread=(role,module)=>{const t=new Worker(new URL('./headless_graphics.mjs',import.meta.url),{workerData:{memory,module,env,abi:queue.web_q_abi(),
-    preopens:{'/':path.parse(root).root},role}});
+    preopens:{'/':path.parse(root).root},role,profile:cpuProfileVu&&role==='vu'}});
     return [t,new Promise((resolve,reject)=>{t.on('message',m=>{if(m.type==='ready')resolve();
       else if(m.type==='error'){gfxError=m.text;console.error(role+' thread:',m.text);reject(Error(m.text));fail(Error(m.text));}});
       t.on('error',e=>{gfxError=String(e?.stack||e);reject(e);fail(e);});})];};
@@ -228,8 +232,9 @@ const window=fromAt===null?null:{from,fields:field-from,fields_per_second:(field
 if(session)await new Promise(r=>session.post('Profiler.stop',(e,res)=>{fs.writeFileSync(path.join(root,'build/web/node.cpuprofile'),JSON.stringify(res.profile));r();}));
 const rows=fs.existsSync(prefix+'.tsv')?fs.readFileSync(prefix+'.tsv','utf8').split('\n').filter(x=>/^\d/.test(x)).length:0;
 const completed=traceOff?field:rows;
-const vu=threaded?await new Promise(r=>{vuThread.on('message',m=>{if(m.type==='report')r(m);});vuThread.postMessage({type:'report'});setTimeout(()=>r({}),5000);})
+const vu=threaded?await new Promise(r=>{vuThread.on('message',m=>{if(m.type==='report')r(m);});vuThread.postMessage({type:'report'});setTimeout(()=>r({}),cpuProfileVu?60000:5000);})
   :{vu_native:graphics.web_vu_native?.(),vu_steps:graphics.web_vu_stat?.(0),vu_blocks:graphics.web_vu_stat?.(1),vu_ieee_probe:graphics.web_vu_ieee_probe&&[0,1,2,3].map(i=>graphics.web_vu_ieee_probe(i)),probe:[0,1,2,3].map(i=>graphics.web_vu_probe?.(i))};
+if(cpuProfileVu&&vu.profileWall)fs.writeFileSync(path.join(root,'build/web/vu.cpuprofile.json'),JSON.stringify({profileWall:vu.profileWall,fromWall,from,endWall:Date.now()}));
 if(gfx)await gfx.terminate();
 if(vuThread)await vuThread.terminate();
 const report={vu_native:vu.vu_native,vu_steps:vu.vu_steps,vu_blocks:vu.vu_blocks,vu_ieee_probe:vu.vu_ieee_probe,probe:vu.probe,threaded,graphics_error:gfxError,rows,window,completed,requested:fields,trace:!traceOff,seconds,fields_per_second:completed/seconds,exit:status,switches,sameSwitches,counts,importMs};
