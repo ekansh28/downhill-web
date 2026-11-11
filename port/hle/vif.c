@@ -474,12 +474,18 @@ static inline __attribute__((always_inline)) uint32_t stream_form(Vif *v, uint32
 }
 
 #if !defined(DHD_VIF0_ONLY)
-/* The fields of vector k of a WL 1 UNPACK (stream_wl1) as one SIMD value (SSE2: on wasm through
-   simde), sign extended unless USN and spread as unpack_fields does. */
-static inline __attribute__((always_inline)) __m128i wl1_fields(uint32_t cmd, int usn, const uint32_t *words, uint32_t k)
+/* The fields of vector k of an UNPACK read by stream_simd as one SIMD value (SSE2: on wasm through
+   simde), sign extended unless USN and spread as unpack_fields does. Each reads only the bytes of
+   its own vector. */
+static inline __attribute__((always_inline)) __m128i simd_fields(uint32_t cmd, int usn, const uint32_t *words, uint32_t k)
 {
     const uint8_t *b = (const uint8_t *)words;
     switch (cmd & 0x0F) {
+    case 0x00: {  /* S-32: the word in every field */
+        uint32_t w;
+        memcpy(&w, b + 4 * k, 4);
+        return _mm_set1_epi32((int)w);
+    }
     case 0x02: {  /* S-8: the byte in every field */
         const uint32_t x = usn ? b[k] : (uint32_t)(int32_t)(int8_t)b[k];
         return _mm_set1_epi32((int)x);
@@ -490,6 +496,18 @@ static inline __attribute__((always_inline)) __m128i wl1_fields(uint32_t cmd, in
         const __m128i t = _mm_set1_epi32((int)w), low = _mm_slli_epi32(t, 16);
         return usn ? _mm_unpacklo_epi32(_mm_srli_epi32(low, 16), _mm_srli_epi32(t, 16))
                    : _mm_unpacklo_epi32(_mm_srai_epi32(low, 16), _mm_srai_epi32(t, 16));
+    }
+    case 0x08: {  /* V3-32: x y z, w 0 */
+        uint32_t z;
+        memcpy(&z, b + 12 * k + 8, 4);
+        return _mm_unpacklo_epi64(_mm_loadl_epi64((const __m128i *)(b + 12 * k)), _mm_cvtsi32_si128((int)z));
+    }
+    case 0x0A: {  /* V3-8: as V4-8 with a zero fourth byte, so w is 0 */
+        const uint8_t *p = b + 3 * k;
+        __m128i t = _mm_cvtsi32_si128((int)(p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16));
+        t = _mm_unpacklo_epi8(t, t);
+        t = _mm_unpacklo_epi16(t, t);
+        return usn ? _mm_srli_epi32(t, 24) : _mm_srai_epi32(t, 24);
     }
     case 0x0C:  /* V4-32 */
         return _mm_loadu_si128((const __m128i *)(b + 16 * k));
@@ -510,38 +528,38 @@ static inline __attribute__((always_inline)) __m128i wl1_fields(uint32_t cmd, in
     }
 }
 
-/* stream_form for WL 1 (any CL) and mode 0, the shape of VIF1's common UNPACKs (finding 090 VU1R:
-   V2-16 and S-8 masked, S-8, V4-5, V4-8 and V4-32, all CL 3 WL 1, are 85% of a race's unpack
-   time). Every vector is in cycle 0, so a masked UNPACK takes mask row 0 for all of them: one
-   per-lane blend of the decoded fields, the row/column registers (column 0) and the old memory
-   (write-protected lanes), set up once a command. Each vector advances the address by CL. Writes
-   what stream_form writes, and buffers a vector cut by the end of the transfer the same way. */
-static inline __attribute__((always_inline)) uint32_t stream_wl1(Vif *v, uint32_t cmd, int usn, const uint32_t *words,
-                                                                 uint32_t n, uint32_t num)
+/* stream_form for mode 0 when every vector takes the same mask row and the destination advances
+   by a fixed stride: WL 1 (any CL; every vector is in cycle 0, mask row 0, stride CL) or, unmasked,
+   WL = CL (stride 1). Those are the shapes of VIF1's common UNPACKs (finding 090 OP3: V2-16 and S-8
+   masked, S-8, V4-5, V4-8 and V4-32 at CL 3 WL 1; V3-32, V3-8, V4-32 and S-32 at CL 4 WL 4; finding
+   203). A masked UNPACK is one per-lane blend of the decoded fields, the row/column registers
+   (column 0) and the old memory (write-protected lanes), set up once a command without branches.
+   Writes what stream_form writes, and buffers a vector cut by the end of the transfer the same
+   way. */
+static inline __attribute__((always_inline)) uint32_t stream_simd(Vif *v, uint32_t cmd, int usn, const uint32_t *words,
+                                                                  uint32_t n, uint32_t num, uint32_t stride)
 {
     int bits, count;
     unpack_format(cmd, &bits, &count);
     const uint32_t span = (cmd & 3) == 3 ? 16 : (uint32_t)(bits * count), masked = cmd >> 4 & 1;
-    const uint32_t stride = v->cl, last = data_qwords(v->unit) - 1;
+    const uint32_t last = data_qwords(v->unit) - 1;
     uint32_t *mem = data_mem(v->unit), addr = v->addr, vectors = num - v->written;
     if (vectors > n * 32 / span) vectors = n * 32 / span;
     __m128i take = _mm_set1_epi32(-1), fixed = _mm_setzero_si128(), keep = _mm_setzero_si128();
     int protect = 0;
     if (masked) {
-        uint32_t t[4], f[4], p[4];
-        for (int i = 0; i < 4; i++) {
-            const uint32_t m = v->mask >> (i * 2) & 3;
-            t[i] = m == 0 ? ~0u : 0;
-            f[i] = m == 1 ? v->row[i] : m == 2 ? v->col[0] : 0;
-            p[i] = m == 3 ? ~0u : 0;
-            protect |= m == 3;
-        }
-        take = _mm_loadu_si128((const __m128i *)t);
-        fixed = _mm_loadu_si128((const __m128i *)f);
-        keep = _mm_loadu_si128((const __m128i *)p);
+        /* lane i gets mask bits 2i..2i+1 (row 0): the byte times 64, 16, 4, 1 (16-bit lanes), down 6 */
+        const __m128i m = _mm_and_si128(_mm_srli_epi32(_mm_mullo_epi16(_mm_set1_epi32((int)(v->mask & 0xFF)),
+                                                                       _mm_setr_epi32(64, 16, 4, 1)), 6),
+                                        _mm_set1_epi32(3));
+        take = _mm_cmpeq_epi32(m, _mm_setzero_si128());
+        keep = _mm_cmpeq_epi32(m, _mm_set1_epi32(3));
+        fixed = _mm_or_si128(_mm_and_si128(_mm_loadu_si128((const __m128i *)v->row), _mm_cmpeq_epi32(m, _mm_set1_epi32(1))),
+                             _mm_and_si128(_mm_set1_epi32((int)v->col[0]), _mm_cmpeq_epi32(m, _mm_set1_epi32(2))));
+        protect = _mm_movemask_epi8(keep);
     }
     for (uint32_t k = 0; k < vectors; k++) {
-        __m128i *dst = (__m128i *)(mem + (addr & last) * 4), out = wl1_fields(cmd, usn, words, k);
+        __m128i *dst = (__m128i *)(mem + (addr & last) * 4), out = simd_fields(cmd, usn, words, k);
         if (masked) {
             out = _mm_or_si128(_mm_and_si128(out, take), fixed);
             if (protect) out = _mm_or_si128(out, _mm_and_si128(_mm_loadu_si128(dst), keep));
@@ -563,16 +581,17 @@ static inline __attribute__((always_inline)) uint32_t stream_wl1(Vif *v, uint32_
 static uint32_t unpack_stream(Vif *v, uint32_t cmd, const uint32_t *words, uint32_t n, uint32_t num)
 {
 #if !defined(DHD_VIF0_ONLY)
-    if (v->mode == 0 && v->wl == 1) {
+    if (v->mode == 0 && (v->wl == 1 || (v->wl == v->cl && !(cmd & 0x10)))) {
         const int usn = v->code >> 14 & 1;
-#define WL1(c) case c: return stream_wl1(v, c, 0, words, n, num)
-#define WL1_USN(c) case c: return usn ? stream_wl1(v, c, 1, words, n, num) : stream_wl1(v, c, 0, words, n, num)
+        const uint32_t stride = v->wl == 1 ? v->cl : 1;
+#define SIMD(c) case c: return stream_simd(v, c, 0, words, n, num, stride)
+#define SIMD_USN(c) case c: return usn ? stream_simd(v, c, 1, words, n, num, stride) : stream_simd(v, c, 0, words, n, num, stride)
         switch (cmd & 0x1F) {
-        WL1_USN(0x02); WL1_USN(0x12); WL1_USN(0x05); WL1_USN(0x15); WL1_USN(0x0E); WL1_USN(0x1E);
-        WL1(0x0C); WL1(0x1C); WL1(0x0F); WL1(0x1F);
+        SIMD_USN(0x02); SIMD_USN(0x12); SIMD_USN(0x05); SIMD_USN(0x15); SIMD_USN(0x0A); SIMD_USN(0x0E); SIMD_USN(0x1E);
+        SIMD(0x00); SIMD(0x08); SIMD(0x0C); SIMD(0x1C); SIMD(0x0F); SIMD(0x1F);
         }
-#undef WL1
-#undef WL1_USN
+#undef SIMD
+#undef SIMD_USN
     }
 #endif
 #define FORM(c) case c: return stream_form(v, c, words, n, num, 0)
@@ -591,15 +610,15 @@ static void unpack_run(Vif *v, const uint32_t *words, uint32_t n)
     if (!num)
         num = 256;
     while (v->written < num) {
+        if (!vif_unpack_reference && v->wl <= v->cl && !v->buf_words && !v->bit) {
+            pos += unpack_stream(v, cmd, words + pos, n - pos, num);
+            break;  /* the transfer is used up, or the UNPACK is complete */
+        }
         uint32_t cycle = v->written % (v->wl ? v->wl : 1);
         int from_stream = v->wl <= v->cl || cycle < v->cl;
         int bits, count;
         unpack_format(cmd, &bits, &count);
         uint32_t span = (uint32_t)(bits * count);
-        if (!vif_unpack_reference && v->wl <= v->cl && !v->buf_words && !v->bit) {
-            pos += unpack_stream(v, cmd, words + pos, n - pos, num);
-            break;  /* the transfer is used up, or the UNPACK is complete */
-        }
         if (from_stream && !v->buf_words && !v->bit && span % 32 == 0 && n - pos >= span / 32) {
             /* Whole words, nothing buffered (V4-32, V4-16, V4-8, ...): read them in place. */
             uint32_t in[4] = {0, 0, 0, 0};

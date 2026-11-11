@@ -49,7 +49,8 @@ static void code(uint32_t value) {
 /* UNPACK fast paths against the generic per-vector path (vif_unpack_reference): random formats,
    masks, USN, STMOD, CL/WL (skipping, equal and filling), counts, start addresses and DMA chunk
    splits; then a probe UNPACK writes the row registers (mode 2 changes them) to memory. The whole
-   16 KB data memory must match. */
+   16 KB data memory must match. fast: only the shapes stream_simd takes (mode 0, WL 1 with any
+   CL, or WL = CL), so each of its forms is checked many times (finding 203). */
 extern int vif_unpack_reference;
 static uint32_t fuzz_state;
 static uint32_t fuzz(void)
@@ -58,16 +59,17 @@ static uint32_t fuzz(void)
     return fuzz_state;
 }
 
-static unsigned unpack_fuzz(unsigned trials)
+static unsigned unpack_fuzz(unsigned trials, int fast)
 {
     static uint32_t stream[8192], initial[4096], reference[4096];
     uint32_t *data = (uint32_t *)0x1100C000;
     unsigned bad = 0, vectors = 0;
     for (unsigned t = 0; t < trials; t++) {
-        fuzz_state = t * 2654435761u + 12345u;
+        fuzz_state = t * 2654435761u + 12345u + (fast ? 0x9E3779B9u : 0);
         unsigned n = 0, cl = 1 + fuzz() % 6, wl = 1 + fuzz() % 6;
+        if (fast) wl = fuzz() % 2 ? 1 : cl;
         stream[n++] = 0x01000000 | wl << 8 | cl;           /* STCYCL */
-        stream[n++] = 0x05000000 | fuzz() % 4;             /* STMOD */
+        stream[n++] = 0x05000000 | (fast ? 0 : fuzz() % 4); /* STMOD */
         stream[n++] = 0x20000000; stream[n++] = fuzz();    /* STMASK */
         stream[n++] = 0x30000000; for (int i = 0; i < 4; i++) stream[n++] = fuzz() % 7 ? fuzz() % 1000 : fuzz();
         stream[n++] = 0x31000000; for (int i = 0; i < 4; i++) stream[n++] = fuzz();
@@ -105,7 +107,8 @@ static unsigned unpack_fuzz(unsigned trials)
             printf("FAIL VIF unpack trial %u: qword %u differs\n", t, q);
         }
     }
-    printf("VIF UNPACK fast paths: %u trials, %u vectors, %u differing\n", trials, vectors, bad);
+    printf("VIF UNPACK fast paths%s: %u trials, %u vectors, %u differing\n", fast ? " (SIMD shapes)" : "",
+           trials, vectors, bad);
     return bad;
 }
 
@@ -153,7 +156,8 @@ int main(void)
     code(0x8001); code(1u << 28); code(14); code(0);
     code(0x11223344); code(0); code(GS_FOGCOL); code(0);
     CHECK(gs.reg[GS_FOGCOL] == 0x11223344 && gs.packets[1] == 1);
-    failures += unpack_fuzz(200000);
+    failures += unpack_fuzz(200000, 0);
+    failures += unpack_fuzz(100000, 1);
     VirtualFree(vu, 0, MEM_RELEASE); VirtualFree(hw, 0, MEM_RELEASE);
     printf("VIF1 upload, double buffering, MSCNT and DIRECT tests: %u failures\n", failures);
     return failures != 0;
