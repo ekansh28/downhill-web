@@ -209,6 +209,25 @@ static inline WebPacket *packet_in(const WebQueue *q, uint32_t at)
 {
     return (WebPacket *)(uintptr_t)(q->ring + (at & (WEB_Q_RING_BYTES - 1)));
 }
+
+/* A consumer's spin on an empty ring before it sleeps, as port/hle/graphics_queue.c's idle_wait
+   adapts it (finding 069): a spin that sees the position move leaves twice the steps it took (plus
+   SPIN_MIN) for the next one, a spin that runs out halves it. Data that comes within a short spin
+   keeps the spin; long gaps make it short, so an idle worker sleeps instead of holding a core
+   (finding 211: the GS worker spun 41% of its time, the VU worker 10%). 1: *p moved from at. */
+enum { SPIN_MIN = 512, SPIN_MAX = 32768 };
+static int spin_until_moved(unsigned *budget, const uint32_t *p, uint32_t at)
+{
+    unsigned limit = *budget;
+    for (unsigned spin = 0; spin < limit; spin++)
+        if (load(p) != at) {
+            unsigned next = spin * 2 + SPIN_MIN;
+            *budget = next < SPIN_MAX ? next : SPIN_MAX;
+            return 1;
+        }
+    *budget = limit / 2 > SPIN_MIN ? limit / 2 : SPIN_MIN;
+    return 0;
+}
 /* consumed up to at, and the producer told when it waits for room or a result. */
 static void retire(WebQueue *q, uint32_t at)
 {
@@ -237,6 +256,7 @@ void web_vu_ready(void);
 uint64_t web_q_vu_dispatch(uint32_t id, const uint64_t *args);   /* build_graphics.py's web_exports_vu.c */
 
 static uint32_t read_at, marked;   /* the first ring: run up to, marked up to */
+static unsigned idle_spin = SPIN_MAX;   /* spin_until_moved's budget on the empty first ring */
 
 /* A worker stopped (its JS sets failed in both blocks): trap rather than wait for ever. */
 static void check_failed(void)
@@ -244,15 +264,39 @@ static void check_failed(void)
     if (load(&WQ->failed) || load(&WQ2->failed)) __builtin_trap();
 }
 
+/* The second ring's publication, in batches (PCSX2's MTGS wakes its GS thread the same way, once
+   0x2000 quadwords are queued, at a vsync and at a wait): head2 is where this side has written to,
+   published2 what the GS worker has been shown (written). A batch is shown when it reaches
+   WAKE_BYTES, and at once for what someone waits on: a mark (the core waits on the first ring's
+   consumed), a vsync (the picture), before this worker waits for room or for the core. In between
+   the GS worker sees no new position, so it neither spins on each XGKICK's packet nor is woken for
+   it, and the two workers stop passing written's and consumed's lines back and forth per packet.
+   Only the timing changes: the GS worker runs the same packets in the same order. */
+enum { WAKE_BYTES = 16u << 10 };
+static uint32_t head2, published2;
+static uint32_t consumed2_seen;   /* the second ring's consumed as last read: room known without a load */
+
+static void flush2(void)
+{
+    WebQueue *q = WQ2;
+    if (published2 == head2) return;
+    published2 = head2;
+    store(&q->written, head2);
+    if (load(&q->sleeping)) __builtin_wasm_memory_atomic_notify((int *)&q->written, 1);
+}
+
 /* Room for one packet of bytes in the second ring (a pad packet first when it would cross the
-   ring's end), as the core's reserve: a short spin, then wasm's wait (a worker may block). */
+   ring's end), as the core's reserve: a short spin, then wasm's wait (a worker may block). The GS
+   worker's consumed is read again only when the room last seen is not enough. */
 static uint32_t reserve2(uint32_t bytes)
 {
     WebQueue *q = WQ2;
-    uint32_t at = q->written;
+    uint32_t at = head2;
     uint32_t tail = WEB_Q_RING_BYTES - (at & (WEB_Q_RING_BYTES - 1)), wrap = bytes > tail ? tail : 0;
     for (unsigned spin = 0;; spin++) {
-        uint32_t done = load(&q->consumed);
+        if (WEB_Q_RING_BYTES - (at - consumed2_seen) >= bytes + wrap) break;
+        if (spin == 0) flush2();   /* the GS worker must see what it is to run to make room */
+        uint32_t done = consumed2_seen = load(&q->consumed);
         if (WEB_Q_RING_BYTES - (at - done) >= bytes + wrap) break;
         if (spin < 4096) continue;
         __atomic_fetch_add(&q->waiting, 1, __ATOMIC_SEQ_CST);
@@ -271,14 +315,14 @@ static uint32_t reserve2(uint32_t bytes)
     return at;
 }
 
-static void publish2(uint32_t end)
+/* The packet ending at end is written; urgent: shown now (flush2), else with its batch. */
+static void publish2(uint32_t end, int urgent)
 {
-    WebQueue *q = WQ2;
-    store(&q->written, end);
-    if (load(&q->sleeping)) __builtin_wasm_memory_atomic_notify((int *)&q->written, 1);
+    head2 = end;
+    if (urgent || end - published2 >= WAKE_BYTES) flush2();
 }
 
-static void put2(uint32_t kind, uint32_t a)
+static void put2(uint32_t kind, uint32_t a, int urgent)
 {
     uint32_t at = reserve2(16);
     WebPacket *p = packet_in(WQ2, at);
@@ -286,12 +330,12 @@ static void put2(uint32_t kind, uint32_t a)
     p->kind = kind;
     p->a = a;
     p->b = 0;
-    publish2(at + 16);
+    publish2(at + 16, urgent);
 }
 
 static void mark(uint32_t at)
 {
-    put2(WQ_MARK, at);
+    put2(WQ_MARK, at, 1);
     marked = at;
 }
 
@@ -309,7 +353,7 @@ void graphics_gif_feed(unsigned path, const uint32_t *words, unsigned count)
     p->a = path;
     p->b = count;
     __builtin_memcpy(p + 1, words, count * 4);
-    publish2(at + bytes);
+    publish2(at + bytes, 0);
 }
 
 /* Once, after the GS worker's web_q_init (the second ring must be there): the first ring's
@@ -334,8 +378,8 @@ __attribute__((export_name("web_vq_run"))) int web_vq_run(void)
         uint32_t at = read_at;
         if (load(&q->written) == at) {
             if (marked != at) mark(at);   /* caught up: the core may be waiting for this */
-            for (unsigned spin = 0; spin < 32768 && load(&q->written) == at; spin++) {}
-            if (load(&q->written) == at) {
+            flush2();                     /* (a mark has shown everything before it already) */
+            if (!spin_until_moved(&idle_spin, &q->written, at)) {
                 store(&q->sleeping, 1);
                 int idle = 0;
                 while (load(&q->written) == at && !idle) {
@@ -356,7 +400,7 @@ __attribute__((export_name("web_vq_run"))) int web_vq_run(void)
                 /* the web_x_* wrapper folds the addresses and checks the VU1 image */
                 uint64_t r = web_q_vu_dispatch(p->a, (const uint64_t *)(p + 1));
                 if (waited) q->result = r;
-            } else put2(WQ_REF, (uint32_t)(uintptr_t)p);
+            } else put2(WQ_REF, (uint32_t)(uintptr_t)p, 0);   /* a waited one is marked below */
         } else if (kind != WQ_PAD) {
             /* what build_graphics.py's web_x_* wrappers do around each call */
             web_graphics_enter();
@@ -368,20 +412,20 @@ __attribute__((export_name("web_vq_run"))) int web_vq_run(void)
                 break;
             case WQ_GRAPHICS:   /* host_graphics.c's host_service_graphics_feed */
                 if (p->b) {
-                    if (p->a == 2) put2(WQ_REF, (uint32_t)(uintptr_t)p);   /* PATH3: the GS's */
+                    if (p->a == 2) put2(WQ_REF, (uint32_t)(uintptr_t)p, 0);   /* PATH3: the GS's */
                     else vif_feed((int)p->a, words, p->b);
                 }
                 break;
             case WQ_FRAME:   /* both workers' kernel_vsync_count */
                 web_frame(*(const uint64_t *)words);
-                put2(WQ_REF, (uint32_t)(uintptr_t)p);
+                put2(WQ_REF, (uint32_t)(uintptr_t)p, 0);
                 break;
-            case WQ_VSYNC:
-                put2(WQ_REF, (uint32_t)(uintptr_t)p);
+            case WQ_VSYNC:   /* the picture: shown now */
+                put2(WQ_REF, (uint32_t)(uintptr_t)p, 1);
                 break;
             case WQ_ENV:   /* both workers' environment */
                 answer = env_line(q, p);
-                put2(WQ_REF, (uint32_t)(uintptr_t)p);
+                put2(WQ_REF, (uint32_t)(uintptr_t)p, 1);
                 break;
             default:
                 __builtin_trap();
@@ -399,6 +443,9 @@ uint32_t web_display(void);
 int web_present(uint32_t canvas_w, uint32_t canvas_h);
 extern const uint64_t *web_gs_mmio_snapshot;
 uint64_t web_q_dispatch(uint32_t id, const uint64_t *args);   /* build_graphics.py's web_exports.c */
+
+enum { RETIRE_BYTES = 64u << 10 };
+static unsigned idle_spin = SPIN_MAX;   /* spin_until_moved's budget on the empty second ring */
 
 /* Once, before the VU worker's web_vq_init: the second ring's address for the VU worker. The
    reactor's own FP control word (WEB_Q_REACTOR_CSR) is set to the GS front end's IEEE mode here
@@ -451,11 +498,11 @@ __attribute__((export_name("web_q_run"))) int web_q_run(void)
 {
     WebQueue *q = WQ2;
     store(&q->sleeping, 0);
-    uint32_t at = load(&q->consumed);
+    uint32_t at = load(&q->consumed), retired = at;
     for (;;) {
         if (load(&q->written) == at) {
-            for (unsigned spin = 0; spin < 32768 && load(&q->written) == at; spin++) {}
-            if (load(&q->written) == at) {
+            if (retired != at) retire(q, retired = at);
+            if (!spin_until_moved(&idle_spin, &q->written, at)) {
                 store(&q->sleeping, 1);
                 if (load(&q->written) == at) return WQ_RUN_EMPTY;
                 store(&q->sleeping, 0);
@@ -481,7 +528,10 @@ __attribute__((export_name("web_q_run"))) int web_q_run(void)
             __builtin_trap();
         }
         at += bytes;
-        retire(q, at);
+        /* consumed only for the VU worker's room: stored when it waits for room, every
+           RETIRE_BYTES, before a wait (above) and before a return (worker.js reads written ==
+           consumed as this worker idle), not per packet */
+        if (answer >= 0 || at - retired >= RETIRE_BYTES || load(&q->waiting)) retire(q, retired = at);
         if (answer >= 0) return answer;
     }
 }

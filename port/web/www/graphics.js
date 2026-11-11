@@ -58,18 +58,19 @@ async function start(m) {
   const yieldTask = () => new Promise(r => { wake = r; channel.port2.postMessage(0); });
   const run = WebAssembly.promising(gx.web_q_run);
   let shown = 0;
+  // The two control blocks (fixed, low addresses: a view of a shared memory stays valid when it grows).
+  const q = new Int32Array(memory.buffer, Q2, 128), s = new Int32Array(memory.buffer, Q, 128).subarray(QI.stats);
+  const stats = [STAT.draws, STAT.dispatches, STAT.reads, STAT.submits, STAT.scale];   // web_gpu_stats(0..4)
   for (;;) {
     const r = await run();
-    const q = new Int32Array(memory.buffer, Q2, 128);
     if (r === 0) {   // empty: wait for the VU worker's next packet
       const w = Atomics.waitAsync(q, QI.written, Atomics.load(q, QI.consumed), 1000);
       if (w.async) await w.value;
     } else if (r === 1) {   // a vsync: show its picture, then end the task
       const size = q[QI.display] >>> 0;
       if (size && gx.web_q_present(canvas.width, canvas.height) === 1) shown++;
-      const s = new Int32Array(memory.buffer, Q, 128).subarray(QI.stats);   // for worker.js, in the first block
-      s[STAT.shown] = shown; s[STAT.size] = size;
-      for (const [k, i] of [['draws', 0], ['dispatches', 1], ['reads', 2], ['submits', 3], ['scale', 4]]) s[STAT[k]] = gx.web_gpu_stats(i);
+      s[STAT.shown] = shown; s[STAT.size] = size;   // for worker.js, in the first block
+      for (let i = 0; i < stats.length; i++) s[stats[i]] = gx.web_gpu_stats(i);
       await yieldTask();
     } else if (r === 2) {   // the core changed its environment (host_putenv): the reactor reads this one
       const text = new TextDecoder().decode(new Uint8Array(memory.buffer, q[QI.env_text] >>> 0, q[QI.env_bytes]).slice());
