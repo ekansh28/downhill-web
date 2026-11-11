@@ -209,9 +209,15 @@ async function start(m) {
   let userScale = null, drawnScale = null, warm = 0;   // the player's DHD_SCALE (null: not yet known), the one set here
   // The graphics worker's state when a field is due (after the pacing wait): still on the last field's
   // packets, or idle (its ring drained). Its share of fields over a second is how busy that worker is.
-  const gsPending = () => { const q2 = new Int32Array(memory.buffer, Q2, 128); return Atomics.load(q2, QI.written) !== Atomics.load(q2, QI.consumed); };
+  // The control blocks' views, made once the shared memory is there (fixed, low addresses: a view of a
+  // shared memory stays valid when it grows).
+  let q2View = null, statView = null;
+  const gsPending = () => Atomics.load(q2View, QI.written) !== Atomics.load(q2View, QI.consumed);
+  const STAT_OF = [STAT.draws, STAT.dispatches, STAT.reads, STAT.submits, STAT.scale];   // stats(0..4)
+  const queuedStats = which => statView[STAT_OF[which]] >>> 0;
   const scaleNumber = v => /^\d+$/.test(v ?? '') ? +v : NaN;
   let riding = 0, held = new Int8Array(KEYS.length);
+  const dir = new Int32Array(3);   // pad(): the keyboard's stick, x and y
   const stallSpec = /^(\d+)(?:,(\d+(?:\.\d+)?))?$/.exec(env.DHD_WEB_STALL || '');
   const stall = stallSpec ? { ms: +stallSpec[1], every: +(stallSpec[2] || 5) } : null;
   let stallAt = performance.now() + 5000, stalls = 0;
@@ -244,17 +250,18 @@ async function start(m) {
     if (port === 0) {
       riding = dv.getInt32(0x0829E290, true) !== 0;
       Atomics.store(mouse, 12, riding ? 1 : 0);  // the page hides the cursor while riding
-      const dir = [0, 0, 0];
-      KEYS.forEach((k, i) => { if (!Atomics.load(keys, k[0])) { held[i] = 0; blocked[k[0]] = 0; return; }
+      dir[1] = dir[2] = 0;
+      for (let i = 0; i < KEYS.length; i++) { const k = KEYS[i];
+        if (!Atomics.load(keys, k[0])) { held[i] = 0; blocked[k[0]] = 0; continue; }
         if (textActive && !ARROWS.has(k[0])) blocked[k[0]] = 1;
-        if (blocked[k[0]]) return;  // typed into a field: no pad press until it is let go
+        if (blocked[k[0]]) continue;  // typed into a field: no pad press until it is let go
         if (!held[i]) held[i] = riding ? 2 : 1;
-        if (held[i] === 2 && k[3]) dir[k[3]] += k[4]; else buttons |= held[i] === 2 ? k[2] : k[1]; });
+        if (held[i] === 2 && k[3]) dir[k[3]] += k[4]; else buttons |= held[i] === 2 ? k[2] : k[1]; }
       if (dir[1]) o[4] = dir[1] < 0 ? 0 : 255;  // left stick x, full deflection while riding
       if (dir[2]) o[5] = dir[2] < 0 ? 0 : 255;
     }
     o[0] = buttons & 255; o[1] = buttons >> 8;
-    PRESSURE.forEach((b, i) => { o[6 + i] = buttons & b ? 255 : 0; });
+    for (let i = 0; i < PRESSURE.length; i++) o[6 + i] = buttons & PRESSURE[i] ? 255 : 0;
   }
   // The core's environment; the threaded build's graphics worker gets each change in its queue,
   // in order with the graphics calls (the reactor reads DHD_RENDER, DHD_SCALE, ... from its own).
@@ -410,11 +417,14 @@ async function start(m) {
     host_pacing_config: p => { askedPeriod = p * 1000; period = capHz ? Math.max(askedPeriod, 1000 / capHz) : askedPeriod; },
     host_sound_write: (a, frames) => {
       soundFrames += frames;
-      const src = new Int16Array(span(a, frames * 4).slice().buffer), h = ring.head, cap = ring.frames;
+      const b = span(a, frames * 4), h = ring.head, cap = ring.frames;
+      const src = b.byteOffset & 1 ? new Int16Array(b.slice().buffer) : new Int16Array(b.buffer, b.byteOffset, frames * 2);
       // running frame counts (audio.js): free is the ring less what is queued; a full ring drops the rest
       const w = Atomics.load(h, 0), r = Atomics.load(h, 1), free = cap - ((w - r) | 0);
       const n = Math.max(0, Math.min(frames, free));
-      for (let i = 0; i < n; i++) { const at = (((w + i) >>> 0) % cap) * 2; ring.data[at] = src[i * 2]; ring.data[at + 1] = src[i * 2 + 1]; }
+      // frame w + i goes to ((w + i) >>> 0) % cap (audio.js's at): whole runs up to the ring's end or the count's wrap
+      for (let i = 0; i < n;) { const u = (w + i) >>> 0, at = u % cap, run = Math.min(n - i, cap - at, 2 ** 32 - u);
+        ring.data.set(src.subarray(i * 2, (i + run) * 2), at * 2); i += run; }
       Atomics.store(h, 0, (w + n) | 0);
     },
     // The VBLANK's picture, then pacing; the only place the game thread lets the browser in.
@@ -425,9 +435,8 @@ async function start(m) {
       let size, presented = 0, stats = null;
       if (threaded) {
         queue.web_q_vsync();
-        const s = new Int32Array(memory.buffer, Q + 4 * QI.stats, 16);
-        size = s[STAT.size] >>> 0; shown = s[STAT.shown];
-        stats = which => s[[STAT.draws, STAT.dispatches, STAT.reads, STAT.submits, STAT.scale][which]] >>> 0;
+        size = statView[STAT.size] >>> 0; shown = statView[STAT.shown];
+        stats = queuedStats;
       } else {
         const saved = getCsr(); setCsr(0x1f80);
         try {
@@ -506,6 +515,7 @@ host_service_host_backtrace host_service_presence host_service_touch_field host_
   if (threaded) {
     if (!(memory.buffer instanceof SharedArrayBuffer)) throw Error('the threaded core has no shared memory');
     queue = (await WebAssembly.instantiate(queueModule, { env: { memory } })).exports;
+    q2View = new Int32Array(memory.buffer, Q2, 128); statView = new Int32Array(memory.buffer, Q + 4 * QI.stats, 16);
     direct.forEach((n, i) => table.set(i, queue['web_x_' + n]));
     await startGraphicsWorker();
     say(`loaded in ${((performance.now() - t0) / 1000).toFixed(1)} s; ${direct.length} GS calls queued to the VU and GS workers; renderer rust`);

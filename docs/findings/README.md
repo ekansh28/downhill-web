@@ -233,6 +233,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 207 | [the site's home page and menu in plain words](207-site-ux.md) | current |  |
 | 208 | [the browser's start compiles the renderer while the core downloads](208-browser-start-parallel.md) | current |  |
 | 210 | [puppets that keep moving through SFU stalls, and corrections that slide instead of jump](210-puppet-smoothing.md) | current |  |
+| 211 | [the browser's worker queues: batching and shorter spins tried, slower; a lazy retire kept](211-worker-queue-hygiene.md) | in progress |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

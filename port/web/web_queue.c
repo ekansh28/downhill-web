@@ -399,6 +399,7 @@ uint32_t web_display(void);
 int web_present(uint32_t canvas_w, uint32_t canvas_h);
 extern const uint64_t *web_gs_mmio_snapshot;
 uint64_t web_q_dispatch(uint32_t id, const uint64_t *args);   /* build_graphics.py's web_exports.c */
+enum { RETIRE_BYTES = 64u << 10 };
 
 /* Once, before the VU worker's web_vq_init: the second ring's address for the VU worker. The
    reactor's own FP control word (WEB_Q_REACTOR_CSR) is set to the GS front end's IEEE mode here
@@ -451,9 +452,10 @@ __attribute__((export_name("web_q_run"))) int web_q_run(void)
 {
     WebQueue *q = WQ2;
     store(&q->sleeping, 0);
-    uint32_t at = load(&q->consumed);
+    uint32_t at = load(&q->consumed), retired = at;
     for (;;) {
         if (load(&q->written) == at) {
+            if (retired != at) retire(q, retired = at);
             for (unsigned spin = 0; spin < 32768 && load(&q->written) == at; spin++) {}
             if (load(&q->written) == at) {
                 store(&q->sleeping, 1);
@@ -481,7 +483,11 @@ __attribute__((export_name("web_q_run"))) int web_q_run(void)
             __builtin_trap();
         }
         at += bytes;
-        retire(q, at);
+        /* consumed is only the VU worker's room (the first ring's is stored at WQ_MARK): stored
+           when the VU worker waits for room, every RETIRE_BYTES, before this loop spins and before
+           it returns (worker.js reads written == consumed as this worker idle), not after every
+           packet, so the VU worker's reserve2 finds consumed's line unchanged in its cache */
+        if (answer >= 0 || at - retired >= RETIRE_BYTES || load(&q->waiting)) retire(q, retired = at);
         if (answer >= 0) return answer;
     }
 }
