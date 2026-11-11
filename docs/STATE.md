@@ -143,7 +143,9 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   at most 1,000 bytes (one datagram), stamped with their moment on the server clock (the PONG
   carries the server's time); each player's own rider 60 times a second, AI riders 30. Puppets are
   drawn at the present: the newest snapshot carried forward by its velocity and angular velocity,
-  corrections fading in (`DHD_PUPPET_PREDICT=0` interpolates in the past instead). Hits are
+  corrections fading in, a large one sliding back at most 90 units a second; through a stall the
+  rider carries on for a second, then slows to a stop (finding 210; `DHD_PUPPET_PREDICT=0`
+  interpolates in the past instead). Hits are
   decided on the puppet as drawn. In a race the FPS & Ping counter shows "RIDERS N MS", the other
   riders' snapshot delay; outside a race "N MS PING", the round trip to the room's server.
 - Client: `port/net/` over `port/net/ws.h`, the Rust crate `dhd_net` (`port/render/net`:

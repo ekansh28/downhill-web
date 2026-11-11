@@ -1,6 +1,6 @@
 # 202: smoother online races: voice over the SFU, fewer relay races, later snapshots predicted
 
-Status: current
+Status: partly superseded by 210 (decision 3, the carry limit)
 Checked: 2026-11-10
 
 Branch `web/merge-0713` (after finding 201). The server (`online/server`), the native transport
