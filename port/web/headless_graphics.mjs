@@ -8,7 +8,16 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { WASI } from 'node:wasi';
 import { Q, Q2, QI } from './www/graphics_common.js';
 
-const { memory, module, env, abi, preopens, role } = workerData;
+const { memory, module, env, abi, preopens, role, profile } = workerData;
+// run_headless.mjs --cpu-profile-vu: a V8 CPU profile of this worker from its start to the report
+let profiler = null, profileWall = null;
+if (profile) {
+  const { Session } = await import('node:inspector');
+  profiler = new Session(); profiler.connect();
+  profiler.post('Profiler.enable'); profiler.post('Profiler.setSamplingInterval', { interval: 250 });
+  await new Promise(r => profiler.post('Profiler.start', r));
+  profileWall = Date.now();
+}
 let gx;
 function fail(err) {
   for (const at of [Q, Q2]) { const q = new Int32Array(memory.buffer, at, 128); Atomics.store(q, QI.failed, 1); Atomics.notify(q, QI.consumed); }
@@ -29,7 +38,14 @@ try {
     if (gx.web_vq_init() !== Q) throw Error('VU: the queue is not at the address run_headless.mjs expects, or the GS thread\'s is not there');
   } else if (gx.web_q_init() !== Q2) throw Error('graphics: the reactor\'s queue is not at the address run_headless.mjs expects');
   if (gx.web_q_abi() !== abi) throw Error(`${role}: the module and gqueue.wasm come from different builds`);
-  parentPort.on('message', m => { if (m.type === 'report') parentPort.postMessage(report()); });
+  parentPort.on('message', async m => {
+    if (m.type !== 'report') return;
+    if (profiler) await new Promise(done => profiler.post('Profiler.stop', async (e, r) => {
+      const fs = await import('node:fs');
+      fs.writeFileSync(new URL('../../build/web/vu.cpuprofile', import.meta.url), JSON.stringify(r.profile)); done();
+    }));
+    parentPort.postMessage({ ...report(), profileWall });
+  });
   parentPort.postMessage({ type: 'ready' });
   if (role === 'vu') {
     for (;;) {
