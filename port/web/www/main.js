@@ -12,23 +12,28 @@ const params = new URLSearchParams(location.search);
 const addLog = text => { log.append(text + '\n'); while (log.childNodes.length > 400) log.firstChild.remove();
   if (!log.hidden) log.scrollTop = log.scrollHeight; };
 
-// What the game needs from the browser, said on the start card before anything starts: JSPI (the
-// game's threads, WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's
-// engine, which has JSPI from Safari 27 (iOS and iPadOS 27).
-const unsupported = typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
+// What the game needs from the browser, said in the card's problem box before anything starts:
+// cross-origin isolation (SharedArrayBuffer: the site's headers), JSPI (the game's threads,
+// WebAssembly.Suspending) and WebGPU. Every browser on iPhone and iPad is Safari's engine, which
+// has JSPI from Safari 27 (iOS and iPadOS 27). The page still lays out (the notes, the site's
+// offer) so the player sees what is wrong and the buttons stay off.
+const unsupported = !crossOriginIsolated ? 'isolation' : typeof WebAssembly.Suspending !== 'function' ? 'jspi' : !navigator.gpu ? 'webgpu' : '';
 if (unsupported) {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  document.querySelector('.note').textContent = ios
-    ? 'This iPhone or iPad browser lacks JSPI, which the game needs. It came with iOS and iPadOS 27 (Safari 27): update iOS, and keep Lockdown Mode off (it turns WebAssembly features off).'
-    : unsupported === 'jspi'
-      ? 'This browser lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome).'
-      : 'This browser has no WebGPU. Use Chrome or Edge 137 or later, with graphics acceleration on.';
-  document.querySelector('.note').style.color = 'var(--gold)';
+  $('problem').textContent = unsupported === 'isolation'
+    ? 'This copy of the page cannot run the game: it was opened without the headers the game needs (cross-origin isolation). Open the game from its own site, not from a saved copy or a plain file server.'
+    : ios
+      ? 'This iPhone or iPad cannot play yet: the game needs a browser feature (JSPI) that came with iOS and iPadOS 27. Update iOS, and keep Lockdown Mode off (it turns WebAssembly features off).'
+      : unsupported === 'jspi'
+        ? 'This browser cannot play the game: it lacks a feature the game needs (JSPI). Use Chrome or Edge 137 or later (on Android: Chrome), then come back to this page.'
+        : 'This browser cannot draw the game: it has no WebGPU. Use Chrome or Edge 137 or later with graphics acceleration on (chrome://settings/system), then come back to this page.';
+  $('problem').hidden = false;
+  status.textContent = 'This browser cannot play the game (see the home page)';
   for (const id of ['start', 'hosted', 'iso']) $(id).disabled = true;
 }
-if (!crossOriginIsolated)  // on the start card too: the status line is in the menu
-  status.textContent = document.querySelector('.note').textContent = 'This page needs cross-origin isolation: start it with port/web/serve.mjs.';
-const input = new SharedArrayBuffer(256 + 32 * 4 + 16 * 4 + 4 * (2 + 64));
+// Without isolation there is no SharedArrayBuffer; the page keeps its layout with plain buffers and never starts.
+const Shared = crossOriginIsolated ? SharedArrayBuffer : ArrayBuffer;
+const input = new Shared(256 + 32 * 4 + 16 * 4 + 4 * (2 + 64));
 // pads: players 1-4, 8 ints each (played by hand the game opens four pads on a multitap, pad.c).
 const keys = new Uint8Array(input, 0, 256), pads = new Int32Array(input, 256, 32);
 // The mouse: host_api.h's HostMouse (x, y as 65536ths of the picture, buttons held, seen, moves,
@@ -39,13 +44,13 @@ const mouse = new Int32Array(input, 384, 16);
 const typed = new Int32Array(input, 448, 2 + 64);
 function type(c) { const w = Atomics.load(typed, 0); if (w - Atomics.load(typed, 1) >= 64) return;
   Atomics.store(typed, 2 + (w & 63), c); Atomics.store(typed, 0, w + 1); }
-const audio = new SharedArrayBuffer(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
+const audio = new Shared(8 + 48000 / 2 * 4);  // 0.5 s of 48 kHz stereo (audio.js keeps 80 ms queued)
 // Voice chat's microphone (finding 183): audio.js's dhd-mic writes 48 kHz mono here, [write, read]
 // then 1 s of samples; voice chat in the net worker (net_worker.js) reads it 20 ms at a time.
-const mic = new SharedArrayBuffer(8 + 48000 * 2);
+const mic = new Shared(8 + 48000 * 2);
 // The others' voices (finding 196): the net worker mixes them into this ring, audio.js's dhd-voice
 // plays it beside the game's sound (net_ring.js has its layout).
-const voice = voiceRingBuffer();
+const voice = crossOriginIsolated ? voiceRingBuffer() : null;
 let soundContext = null, micOpen = null;  // the page's AudioContext; the microphone while it is open
 
 // KeyboardEvent.code -> the Windows virtual-key code keyboard.c's table uses (US places).
@@ -55,7 +60,7 @@ function vk(code) {
   if (named[code]) return named[code];
   const m = /^Key([A-Z])$/.exec(code); return m ? m[1].charCodeAt(0) : 0;
 }
-let running = false;
+let running = false, lastField = 0;
 let siteReady = Promise.resolve();  // site.json read (below): start waits for it
 // the on-screen controls (touch.js): their menu button opens the page menu, as ` does
 const touch = createTouch({ onMenu: () => toggleMenu() });
@@ -140,12 +145,23 @@ $('fullscreen').onclick = () => { fullscreen(); canvas.focus(); };
 // by its button. A click on the game closes it; the hint shows for a few seconds at the start.
 const menu = $('menu'), hint = $('hint');
 let hintTimer;
-function showHint(ms = 4000) { hint.classList.add('show'); clearTimeout(hintTimer); hintTimer = setTimeout(() => hint.classList.remove('show'), ms); }
-function toggleMenu(open = menu.hidden) { menu.hidden = !open; if (open) hint.classList.remove('show'); else canvas.focus(); }
+// showHint(): the menu hint (` on a keyboard, the ☰ button on a touch screen); showHint(text, ms): a note
+// over the game for a moment (no microphone, no network).
+function showHint(text = '', ms = 4000) {
+  hint.innerHTML = text ? '' : touch.enabled ? '&#x2630; opens the menu' : 'Press <kbd>`</kbd> for the menu &middot; double-click for fullscreen';
+  if (text) hint.textContent = text;
+  hint.classList.add('show'); clearTimeout(hintTimer); hintTimer = setTimeout(() => hint.classList.remove('show'), ms);
+}
+function toggleMenu(open = menu.hidden) { menu.hidden = !open; if (open) hint.classList.remove('show'); else if (running) canvas.focus(); }
 $('menuClose').addEventListener('click', () => toggleMenu(false));  // the window's close button
-for (const [id, section] of [['controlsButton', $('controls')], ['logButton', log]])
-  $(id).onclick = () => { section.hidden = !section.hidden; $(id).setAttribute('aria-pressed', String(!section.hidden));
-    if (!section.hidden && section === log) log.scrollTop = log.scrollHeight; };
+function showSection(id, section, open = section.hidden) {
+  section.hidden = !open; $(id).setAttribute('aria-pressed', String(open));
+  if (open && section === log) log.scrollTop = log.scrollHeight;
+}
+for (const [id, section] of [['controlsButton', $('controls')], ['logButton', log]]) $(id).onclick = () => showSection(id, section);
+// the home page's "Controls and keys": the same menu window, on Controls (it closes with its X, as in the game)
+$('helpLink').onclick = () => { showSection('controlsButton', $('controls'), true); showSection('logButton', log, false); toggleMenu(true); };
+$('reload').onclick = () => location.reload();
 menu.addEventListener('pointerdown', e => e.stopPropagation());
 canvas.addEventListener('pointerdown', () => { if (!menu.hidden) toggleMenu(false); });
 // Saves (the memory card and dhd.ini, kept in this browser's IndexedDB, vfs.js and settings.js) to
@@ -185,7 +201,13 @@ $('exportSaves').onclick = () => exportSaves().catch(e => addLog(`saves: not exp
 $('importSaves').onchange = () => { const f = $('importSaves').files[0]; if (!f) return;
   importSaves(f).then(() => { $('importLabel').textContent = 'Saves imported'; }, e => { $('importLabel').textContent = `Not imported: ${e.message}`; }); };
 $('touchButton').onclick = () => { touch.set(!touch.enabled); $('touchButton').setAttribute('aria-pressed', String(touch.enabled)); };
-const openLog = () => { toggleMenu(true); log.hidden = false; $('logButton').setAttribute('aria-pressed', 'true'); };
+const openLog = () => { toggleMenu(true); showSection('logButton', log, true); };
+// The game stopped (a worker error, or it exited): the menu says so in plain words, with the log
+// open for a report, and offers a reload (the only way back to the home page).
+function stopped(text) { status.textContent = text; $('reload').hidden = false; openLog(); }
+// The browser went offline or came back: a note over the game (a streamed disc waits for the network).
+addEventListener('offline', () => { if (running) showHint('No internet connection: the game waits for it', 6000); });
+addEventListener('online', () => { if (running) showHint('Back online', 2000); });
 
 // The display's refresh rate (PC SETTINGS > Frame Rate > Monitor: the worker's host_display_hz):
 // the median of 30 frame intervals; 60 when the page gets no frames within a second (hidden).
@@ -224,11 +246,12 @@ async function micNames() {
     .map(d => d.label); } catch { return []; }
 }
 async function start(source) {
+  if (unsupported) return;  // the problem box says why
   await siteReady;  // this site's server, if it is one, before the game reads its settings
   applyUsername();  // the home page's username: the game's online name
   navigator.storage?.persist?.().catch(() => {});  // keep the saves and the disc when the browser is short of space
   $('start').disabled = true; $('iso').disabled = true; $('hosted').disabled = true; running = true;
-  document.body.classList.add('running'); status.textContent = 'starting';
+  document.body.classList.add('running'); status.textContent = 'Starting';
   // A phone or tablet: the on-screen controls, the whole screen, and landscape where it can be locked
   // (the Start tap is the gesture both need).
   if (touch.likely()) {
@@ -254,22 +277,26 @@ async function start(source) {
   const offscreen = canvas.transferControlToOffscreen();
   worker.onmessage = e => { const m = e.data;
     if (m.type === 'log') addLog(m.text);
-    else if (m.type === 'error') { addLog('ERROR ' + m.text); status.textContent = 'stopped: ' + m.text.split('\n')[0];
-      openLog(); }
-    else if (m.type === 'running') status.textContent = 'running';
+    else if (m.type === 'error') { addLog('ERROR ' + m.text); stopped('The game stopped: ' + m.text.split('\n')[0]); }
+    else if (m.type === 'running') status.textContent = 'Running';
     else if (m.type === 'clipboard') { navigator.clipboard?.writeText(m.text).catch(e => addLog(`clipboard: ${e.message}`));
       if (JOIN_CODE.test(m.text)) invite(m.text); }  // the player copied their room's code (Circle)
     else if (m.type === 'room') invite(m.code, m.inRoom, m.racing);
     else if (m.type === 'mic') microphone(m.on, m.device).then(state => worker.postMessage({ type: 'mic-state', state }));
     else if (m.type === 'picture') pictureShape = m.shape || 4 / 3;
     else if (m.type === 'disc-wait') watchDiscWait(new Int32Array(m.ctrl.buffer, m.ctrl.byteOffset, 4));
-    else if (m.type === 'exit') status.textContent = `game exited (${m.status})`;
-    else if (m.type === 'status') { status.textContent = `field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}${m.autoCap ? `  capped ${m.autoCap} fields/s` : ''}${m.autoScale ? `  auto ${m.autoScale}x` : ''}`;
+    else if (m.type === 'exit') stopped(`The game exited (${m.status})`);
+    // the status line in the player's words (with the automatic frame cap and resolution, finding 206);
+    // the whole report (fields, draws, batches, readbacks) is window.dhdStatus and goes to the log once a minute
+    else if (m.type === 'status') { status.textContent = `${m.fps.toFixed(0)} fps, picture ${m.size}${m.riding ? ', riding' : ''}` +
+        `${m.autoCap ? `, capped at ${m.autoCap} fps` : ''}${m.autoScale ? `, resolution ${m.autoScale}x (automatic)` : ''}`;
       if (m.disc) discProgress(m.disc);
       if (m.discBoot) window.dhdDiscBoot = m.discBoot;  // deploy checks read it (disc boot list)
-      document.title = `DHD ${m.fps.toFixed(1)} fps (field ${m.field})`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }
+      if (m.field % 3600 < lastField % 3600) addLog(`field ${m.field}  ${m.fps.toFixed(1)} fields/s  picture ${m.size}  draws ${m.draws}  batches ${m.dispatches}  readbacks ${m.reads}  sound ${m.sound} s${m.riding ? '  riding' : ''}`);
+      lastField = m.field;
+      document.title = `Downhill Revived (${m.fps.toFixed(0)} fps)`; window.dhdStatus = m; (window.dhdHistory ??= []).push([m.field, +m.fps.toFixed(2), m.draws]); }
   };
-  worker.onerror = e => addLog('worker error: ' + e.message);
+  worker.onerror = e => { addLog('worker error: ' + e.message); stopped('The game stopped: ' + e.message); };
   gameWorker = worker;
   // WebRTC to the SFU (sfu.js, finding 200): on this page's thread, the net worker's partner
   const sfuChannel = 'RTCPeerConnection' in window ? new MessageChannel() : null;
@@ -295,13 +322,13 @@ async function start(source) {
 // A streamed disc's copy in this browser (disc_store.js): how much is here, and Pause/Resume.
 let gameWorker = null, discPaused = false;
 function discProgress(d) {
-  const pct = Math.floor(d.stored / d.count * 100);
-  $('discState').hidden = $('discPause').hidden = !d.kept;
-  if (d.stored >= d.count) { $('discState').textContent = 'Disc: all in this browser, nothing streams'; $('discPause').hidden = true; return; }
-  $('discState').textContent = `Disc in this browser: ${pct}% (${(d.stored * d.block / 2 ** 20).toFixed(0)} MiB)` +
-    (discPaused ? ', paused' : d.filling ? ', downloading' : ', waits while you ride') +
-    (d.track && d.track.stored < d.track.count ? ` · the room's track first: ${Math.floor(d.track.stored / d.track.count * 100)}%` : '') +
-    (d.net ? ` · blocks from the site: ${d.net}, avg ${d.avgMs.toFixed(0)} ms` : '');
+  const mib = n => `${(n * d.block / 2 ** 20).toFixed(0)} MB`;
+  $('discState').hidden = false; $('discPause').hidden = !d.kept;
+  if (!d.kept) { $('discState').textContent = 'The game is not kept in this browser (no room for it): it streams from the site every time.'; return; }
+  if (d.stored >= d.count) { $('discState').textContent = 'The whole game is in this browser: nothing streams any more.'; $('discPause').hidden = true; return; }
+  const track = d.track && d.track.stored < d.track.count ? ` This room's track comes first: ${Math.floor(d.track.stored / d.track.count * 100)}%.` : '';
+  $('discState').textContent = `Downloading the game into this browser: ${Math.floor(d.stored / d.count * 100)}% (${mib(d.stored)} of ${mib(d.count)})` +
+    (discPaused ? ', paused.' : d.filling ? '.' : ', paused while you ride.') + track;
 }
 $('discPause').onclick = () => { discPaused = !discPaused; gameWorker?.postMessage({ type: 'disc-pause', paused: discPaused });
   $('discPause').textContent = discPaused ? 'Resume disc download' : 'Pause disc download'; };
@@ -347,7 +374,8 @@ async function openMicrophone(on, device) {
     addLog(`voice: microphone ${stream.getAudioTracks()[0]?.label || '(default)'}`);
     micChanged();  // the names are there now that one is allowed
     return 1;
-  } catch (e) { addLog(`voice: no microphone (${e.message})`); return -1; }
+  } catch (e) { addLog(`voice: no microphone (${e.message})`);
+    showHint(/denied|permission/i.test(e.message) ? 'Microphone not allowed: click the lock icon in the address bar to allow it' : 'No microphone found', 6000); return -1; }
 }
 
 $('iso').onchange = () => { const file = $('iso').files[0];
@@ -382,7 +410,7 @@ $('invite').onclick = () => {
   navigator.clipboard?.writeText(link).then(() => { $('invite').textContent = 'Invite link copied'; },
     e => addLog(`clipboard: ${e.message}`));
   $('inviteFloat').textContent = 'Link copied';
-  setTimeout(() => { $('invite').textContent = 'Copy invite link'; $('inviteFloat').textContent = 'Invite friends'; }, 1500);
+  setTimeout(() => { $('invite').textContent = 'Copy invite link'; $('inviteFloat').textContent = 'Invite friends'; }, 2500);
 };
 // Test hook: serve.mjs --iso <path> serves that file as /test-iso to localhost only, and
 // ?iso=test starts with it at once (headless checks; the ISO never leaves the machine).
@@ -400,9 +428,10 @@ const cleanName = text => String(text || '').toUpperCase().replace(NAME_LETTERS,
 const urlName = 'DHD_NET_NAME' in env;
 function username() { return cleanName($('username').value).trim(); }
 function applyUsername() { if (!urlName && username()) env.DHD_NET_NAME = username(), env.DHD_NET_NAME_PAGE = '1'; }  // the game's own name editor then defers to this page
+let nameAsked = false;  // a Play press without a name: from then on the field says so until one is typed
 function nameGate() {
   const missing = !username();
-  $('username').closest('.username').classList.toggle('needed', missing);
+  $('username').closest('.username').classList.toggle('needed', missing && nameAsked);
   for (const id of ['hosted', 'start']) if (missing) $(id).dataset.needsName = '1'; else delete $(id).dataset.needsName;
   $('hosted').title = $('start').title = missing ? 'Type your username first' : '';
 }
@@ -417,12 +446,22 @@ $('username').addEventListener('input', () => {
 nameGate();
 // a Play press without a name: the username box asks first (capture: before the buttons' own handlers)
 for (const id of ['hosted', 'start']) $(id).addEventListener('click', e => {
-  if (!username()) { e.stopImmediatePropagation(); e.preventDefault(); $('username').focus();
-    $('username').closest('.username').classList.add('needed'); }
+  if (!username()) { e.stopImmediatePropagation(); e.preventDefault(); nameAsked = true; nameGate(); $('username').focus(); }
 }, true);
+// Enter in the name field plays (or moves to the access code when the site asks for one)
+$('username').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  if (!$('accessRow').hidden && !$('accessCode').value.trim()) { $('accessCode').focus(); return; }
+  for (const id of ['hosted', 'start']) if (!$(id).hidden && !$(id).disabled) { $(id).click(); return; }
+});
+// the keyboard starts in the first empty field (not on a phone: that would open its keyboard over the card)
+if (!touch.likely()) ($('username').value ? $('hosted') : $('username')).focus();
 const room = (params.get('room') || '').toUpperCase();
 if (JOIN_CODE.test(room) && !('DHD_NET_ROOM' in env)) env.DHD_NET_ROOM = room;
 else if (room) addLog(`?room=${room}: not a join code (6 letters and digits)`);
+// An invite link: the card says which room Play joins (the game joins it by itself after the start)
+if (env.DHD_NET_ROOM) { $('inviteNote').textContent = `You are invited to room ${env.DHD_NET_ROOM}: type your username and press Play to join it.`; $('inviteNote').hidden = false; }
 // Tests read and save no settings unless they name them (?env.DHD_SETTINGS=<name>), as the tools'
 // DHD_SETTINGS=none natively.
 if (params.get('iso') === 'test') start({ isoUrl: '/test-iso', env: { DHD_SETTINGS: 'none', ...env } });
@@ -448,9 +487,9 @@ async function warmDisc(base) {
     const lane = async () => { while (next < list.length && !running) {
       const i = list[next++];
       try { await (await fetch(`${base}/${info.tag}/${i}`)).arrayBuffer(); got++; } catch { /* the store fetches it later */ }
-      $('hostedNote').textContent = `Getting the game ready: ${Math.round(got / list.length * 100)}% (you can start now)`; } };
+      $('hostedNote').textContent = `Getting the first part of the game ready: ${Math.round(got / list.length * 100)}% (you can press Play now; the rest streams as you play)`; } };
     await Promise.all(Array.from({ length: 12 }, lane));  // a far edge (0.8 s to the first byte) needs many in flight
-    if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast.'; }
+    if (got === list.length) { localStorage.setItem(done, '1'); $('hostedNote').textContent = 'Ready: the game starts fast. The rest streams as you play and downloads into this browser in the background.'; }
   } catch { /* nothing to warm: the game streams as before */ }
 }
 // The GPU WebGPU gives this page. Chrome and Edge on Windows hand out the GPU Windows set for the
@@ -460,7 +499,13 @@ navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' }).then(a =>
   if (a?.info?.vendor === 'intel') $('gpuTip').hidden = false;
 }).catch(() => {});
 
-// Dev notes (notes.json: [{ date, title, items: [...] }], newest first), on the start page.
+// Dev notes (notes.json: [{ date, title, items: [...] }], newest first), on the start page. The
+// window's minimize button folds them away, remembered in this browser.
+const NOTES_FOLDED = 'dhd-notes-folded';
+const foldNotes = on => { $('notesBody').hidden = on; $('notesFold').setAttribute('aria-label', on ? 'Maximize' : 'Minimize');
+  $('notesFold').title = on ? 'Show the notes' : 'Fold the notes away'; };
+try { if (localStorage.getItem(NOTES_FOLDED)) foldNotes(true); } catch { /* no storage */ }
+$('notesFold').onclick = () => { const on = !$('notesBody').hidden; foldNotes(on); try { localStorage.setItem(NOTES_FOLDED, on ? '1' : ''); } catch { /* no storage */ } };
 fetch('notes.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : Promise.reject(Error(r.status))).then(notes => {
   const box = $('notes');
   box.replaceChildren();
@@ -488,6 +533,8 @@ siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() 
     navigator.storage?.persist?.().catch(() => {});  // keep the disc's copy when the browser is short of space
     start({ discUrl: `/disc/${encodeURIComponent(k)}`, env }); };
   $('hosted').hidden = $('hostedNote').hidden = false;
+  if (env.DHD_NET_ROOM) $('hosted').textContent = 'Play and join the room';
+  if (unsupported) { $('hostedNote').hidden = true; return; }  // the problem box says why; nothing to warm
   if (valid(key)) {
     warmDisc(`/disc/${encodeURIComponent(key)}`);
     $('hosted').onclick = () => play(key);
@@ -496,17 +543,22 @@ siteReady = fetch('site.json', { cache: 'no-store' }).then(r => r.ok ? r.json() 
   // This device hasn't opened the invite link: the same button, with the access code asked once
   // (checked against the site, then kept in this browser like the link's).
   $('accessRow').hidden = false;
-  $('hostedNote').textContent = 'First time on this device: paste the access code, or open your invite link once.';
+  $('hostedNote').textContent = env.DHD_NET_ROOM
+    ? 'This device needs the access code once: it is in the invite link your friend sent (the part after disc=). Ask them for the whole link, or paste the code here.'
+    : 'First time on this device: paste the access code, or open your invite link once. This device then remembers it.';
+  const codeProblem = text => { $('hostedNote').textContent = text; $('accessCode').focus(); $('accessCode').select(); };
   const tryCode = async () => {
     const k = $('accessCode').value.trim().replace(/^.*[?&]disc=/, '').replace(/[&#].*$/, '');  // a whole link pasted works too
-    if (!valid(k)) { $('hostedNote').textContent = 'That is not an access code: paste the part after disc= in your invite link.'; return; }
-    $('hosted').disabled = true;
-    const ok = await fetch(`/disc/${encodeURIComponent(k)}/info`, { cache: 'no-store' }).then(r => r.ok, () => false);
+    if (!k) { codeProblem('Paste the access code (or the whole invite link) first.'); return; }
+    if (!valid(k)) { codeProblem('That is not an access code: paste the part after disc= in your invite link, or the whole link.'); return; }
+    $('hosted').disabled = true; $('hostedNote').textContent = 'Checking the code\u2026';
+    const ok = await fetch(`/disc/${encodeURIComponent(k)}/info`, { cache: 'no-store' }).then(r => r.ok ? 'ok' : r.status === 404 ? 'wrong' : 'down', () => 'down');
     $('hosted').disabled = false;
-    if (!ok) { $('hostedNote').textContent = 'That code does not open this site\'s disc. Check it, or ask for a new invite link.'; return; }
+    if (ok === 'wrong') { codeProblem('That code does not open this site. Check it, or ask your friend for a new invite link.'); return; }
+    if (ok === 'down') { codeProblem('The site did not answer: check your connection and try again.'); return; }
     try { localStorage.setItem(DISC_KEY, k); } catch { /* no storage: this session only */ }
     $('accessRow').hidden = true;
-    $('hostedNote').textContent = 'Starting: the disc streams as you play. This device remembers the code.';
+    $('hostedNote').textContent = 'Starting: the game streams as you play. This device remembers the code.';
     play(k);
   };
   $('hosted').onclick = tryCode;
