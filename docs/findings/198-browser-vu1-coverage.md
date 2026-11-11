@@ -1,6 +1,6 @@
 # 198: the browser's VU1 already runs entirely in AOT blocks and native kernels
 
-Status: current
+Status: partly superseded by 209 (what `run_micro`'s share is: the native kernels, not the blocks)
 Checked: 2026-11-09
 
 2026-11-09, branch `web/self-host` (7058d96; lane `web/vu1aot`, 8ba3f98). Browser only.

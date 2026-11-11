@@ -177,8 +177,9 @@ rebinding gave way to upstream's 137/175 and 157):
   race's pause menu.
 - The self-hosted browser site (finding 194, `port/web/host`): the Worker serves the page, the
   disc and is its own online server; in a room the streamed disc downloads that track's files
-  first (2026-11-10). Browser speed: findings 195-198 (the VU worker's AOT blocks
-  are the race's limit); VIF1 UNPACK's SIMD path also covers WL = CL (finding 203).
+  first (2026-11-10). Browser speed: findings 195-198; the VU worker is the race's
+  limit, and 75% of its busy time is the native VU1 kernels, not the AOT blocks or their dispatch
+  (finding 209); VIF1 UNPACK's SIMD path also covers WL = CL (finding 203).
 
 ## Checks and tools
 

@@ -221,7 +221,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 195 | [browser deferred vsync and display pacing: not kept](195-browser-vsync-pacing.md) | current |  |
 | 196 | [The browser's sockets and voice chat in a worker of their own](196-browser-net-voice-worker.md) | current |  |
 | 197 | [the browser's VU1 and GS workers: already split; what limits the race now](197-browser-vu1-gs-split.md) | current |  |
-| 198 | [the browser's VU1 already runs entirely in AOT blocks and native kernels](198-browser-vu1-coverage.md) | current |  |
+| 198 | [the browser's VU1 already runs entirely in AOT blocks and native kernels](198-browser-vu1-coverage.md) | partly superseded | [209](209-vu1-faster-blocks.md) for what `run_micro`'s share is: the native kernels, not the blocks |
 | 199 | [relay races: one race, one transport, the room WebSocket when Realtime can't carry it](199-relay-races.md) | current |  |
 | 200 | [the browser races over Cloudflare Realtime SFU (WebRTC on the page's thread)](200-browser-webrtc.md) | current |  |
 | 201 | [the browser races on a laptop's integrated GPU: a tip to switch](201-browser-laptop-gpu.md) | current |  |
@@ -232,6 +232,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 206 | [the browser caps its own frame rate and resolution when the PC falls behind](206-auto-pace.md) | in progress |  |
 | 207 | [the site's home page and menu in plain words](207-site-ux.md) | current |  |
 | 208 | [the browser's start compiles the renderer while the core downloads](208-browser-start-parallel.md) | current |  |
+| 209 | [the browser's VU worker: its time is the native kernels, not the AOT dispatch or blocks](209-vu1-faster-blocks.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->
