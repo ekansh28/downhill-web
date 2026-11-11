@@ -11,6 +11,7 @@
 // buckets (one per region, the same object in each); a request reads the bucket nearest the
 // Cloudflare location serving it, and the others if that one fails.
 import server, { Room, LobbyIndex, TrackTimes, Leaderboard } from "../../../../online/server/src/index";
+import { ipHash, overLimit, type GuardEnv } from "../../../../online/server/src/guard";
 
 export { Room, LobbyIndex, TrackTimes, Leaderboard };
 
@@ -215,6 +216,10 @@ const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
 async function invitePage(request: Request, env: HostEnv, code: string): Promise<Response> {
   const page = await env.ASSETS.fetch(new Request(new URL("/", request.url), request));
   let card: { host: string; players: number; max: number; racing: boolean } | null = null;
+  // The room is asked only within the room server's own connection limit per address: a crawler of
+  // codes gets the site's preview, and no room is woken for it.
+  const g = env as unknown as GuardEnv;
+  if (await overLimit(g, await ipHash(g, request), false)) return page;
   try {
     const room = env.ROOM.get(env.ROOM.idFromName(code)) as unknown as { inviteCard(): Promise<typeof card> };
     card = await Promise.race([room.inviteCard(), new Promise<null>((r) => setTimeout(() => r(null), 2000))]);
