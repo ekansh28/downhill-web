@@ -24,7 +24,9 @@
    stamped with the sender's server clock, which places it on this PC's race clock: its age on
    arrival is measured, not guessed. Each puppet keeps the last few and shows the remote rider at
    the present moment: its newest snapshot carried forward by its velocity and angular velocity,
-   a correction fading in when a newer one moves it (puppet_predict.h). DHD_PUPPET_PREDICT=0 shows
+   a correction fading in when a newer one moves it, and when snapshots stop for a while (a stall
+   on the SFU) carried on for a second, then slowing to a stop (puppet_predict.h, finding 210).
+   DHD_PUPPET_PREDICT=0 shows
    it a delay behind the present instead (interpolated between the two around that moment): the
    snapshots' usual age plus the wait for the next one. Every PC
    runs at its own frame rate (30-240), so the clocks here are race time in seconds, not ticks:
@@ -102,8 +104,9 @@ enum { RING = 32, MAX_EVENTS = 16, NET_SLOTS = 10 };
    full copy every PAD_REFRESH sends, finding 158). */
 #include "state_bundle.h"
 #include "puppet_predict.h"
-/* Snapshots a puppet's age estimate sees before prediction trusts it (predict_limit). */
+/* Snapshots a puppet's age estimate sees before it starts its mean again (feed). */
 enum { PREDICT_SETTLED = 16 };
+static const PuppetTune tune = PUPPET_TUNE;
 enum { EVENT_VERSION = 2, EVENT_HIT = 1 };  /* a hit: online.c's EVENT version */
 
 typedef struct Puppet {
@@ -114,12 +117,10 @@ typedef struct Puppet {
        (smoothed, gain 1/16), and the interval between the sender's snapshots (finding 169) */
     int have_age;            /* snapshots the estimates have seen (capped) */
     double age, jitter, interval;
-    /* Prediction (finding 169): the snapshot the shown pose is carried forward from, the fading
-       correction from the last change of it, and how far behind the present it was last shown */
-    Snapshot basis;
-    int have_basis;
-    PuppetCorrection fix;
-    double fixed_at, behind;
+    /* Prediction (finding 169): the snapshot the shown pose is carried forward from and the fading
+       correction (puppet_predict.h), and how far behind the present it was last shown */
+    PuppetView view;
+    double behind;
     uint32_t mirror[PAD_WORDS];  /* the remote virtual pad, as the deltas built it */
     PadSender sent_pad;
     int remote_crash;
@@ -223,7 +224,7 @@ static void feed(int slot, const Snapshot *s)
        and the ring at each race's start, and hle_puppet_receive has already applied this
        snapshot's pad words to the mirror, so nothing here may clear it. */
     if (p->count && s->time < p->ring[p->count - 1].time - 1)
-        p->count = 0, p->have_age = 0, p->have_basis = 0;
+        p->count = 0, p->have_age = 0, p->view.have_basis = 0;
     if (p->count && s->time <= p->ring[p->count - 1].time) return;
     double age = RACE_TIME - s->time;
     if (!p->have_age) {
@@ -295,30 +296,27 @@ static void interpolate(const Puppet *p, double t, Snapshot *out)
     }
 }
 
-/* How far a puppet's snapshot may be carried forward (finding 202): PREDICT_MAX_MS, or for a sender
-   whose snapshots usually arrive older than that (a race through the room, a far link) its usual
-   age plus a frame's margin, at most PREDICT_LATE_MAX_MS: else the rider is drawn behind by the
-   difference and a racer ahead looks behind. Corrections still fade in (smooth). */
-enum { PREDICT_LATE_MAX_MS = 600 };
-static double predict_limit(const Puppet *p)
+static void motion_of(const Snapshot *s, PuppetMotion *m)
 {
-    /* The first snapshots of a race were held until its release and arrive seconds old: the usual
-       age counts once it has seen PREDICT_SETTLED of them (about half a second). */
-    double usual = p && p->have_age >= PREDICT_SETTLED ? p->age + 0.05 : 0;
-    return fmin(PREDICT_LATE_MAX_MS / 1000.0, fmax(PREDICT_MAX_MS / 1000.0, usual));
+    m->time = s->time;
+    memcpy(m->pos, s->pos, sizeof m->pos);
+    memcpy(m->rot, s->rot, sizeof m->rot);
+    memcpy(m->vel, s->vel, sizeof m->vel);
+    memcpy(m->spin, s->spin, sizeof m->spin);
+    m->crash = s->crash;
 }
 
-/* The snapshot carried forward from its moment to t (at most predict_limit): position along the
-   velocity, orientation by the angular velocity (puppet_predict.h). */
-static void carry(const Puppet *p, const Snapshot *from, double t, Snapshot *out)
+/* The snapshot carried forward from its moment to t: position along the velocity, orientation by
+   the angular velocity, for at most PUPPET_TUNE's carry and coast (puppet_predict.h). */
+static void carry(const Snapshot *from, double t, Snapshot *out)
 {
+    PuppetMotion m;
     PuppetPose pose;
-    double h = fmin(fmax(0, t - from->time), predict_limit(p));
+    motion_of(from, &m);
     *out = *from;
-    predict_pose(from->pos, from->rot, from->vel, from->spin, (float)h, &pose);
+    out->time = puppet_carry(&m, t, &tune, &pose);
     memcpy(out->pos, pose.pos, sizeof pose.pos);
     memcpy(out->rot, pose.rot, sizeof pose.rot);
-    out->time = from->time + h;
 }
 
 /* What to show now (out->time: the moment shown, on this PC's race clock). Predicting: the newest
@@ -329,37 +327,24 @@ static int wanted(int slot, Snapshot *out)
     Puppet *p = &pp.p[slot];
     if (!p->count) return 0;
     const Snapshot *newest = &p->ring[p->count - 1];
-    if (pp.predict && RACE_TIME >= newest->time) carry(p, newest, RACE_TIME, out);
+    if (pp.predict && RACE_TIME >= newest->time) carry(newest, RACE_TIME, out);
     else interpolate(p, pp.predict ? RACE_TIME : RACE_TIME - puppet_delay(p), out);
     return 1;
 }
 
 /* Predicting: when a newer snapshot moves the prediction, the rider is first shown where it was and
-   the difference fades (puppet_predict.h); a jump too large to be a misprediction (a respawn) and
-   the first pose after a crash or a gap are shown at once. s: wanted()'s pose, changed in place. */
+   the difference fades (puppet_show); a jump too large to be a misprediction (a respawn) and the
+   first pose after a crash or a gap are shown at once. s: wanted()'s pose, changed in place. */
 static void smooth(Puppet *p, Snapshot *s)
 {
-    const Snapshot *newest = &p->ring[p->count - 1];
-    double now = RACE_TIME;
-    PuppetPose raw, was, old;
-    memcpy(raw.pos, s->pos, sizeof raw.pos);
-    memcpy(raw.rot, s->rot, sizeof raw.rot);
-    correction_decay(&p->fix, (float)(now - p->fixed_at));
-    p->fixed_at = now;
-    if (!p->have_basis || (newest->crash ^ p->basis.crash) & 4)
-        correction_clear(&p->fix);
-    else if (newest->time != p->basis.time) {
-        Snapshot before;
-        carry(p, &p->basis, now, &before);
-        memcpy(old.pos, before.pos, sizeof old.pos);
-        memcpy(old.rot, before.rot, sizeof old.rot);
-        correction_apply(&p->fix, &old, &was);
-        correction_start(&p->fix, &was, &raw);
-    }
-    p->basis = *newest, p->have_basis = 1;
-    correction_apply(&p->fix, &raw, &was);
-    memcpy(s->pos, was.pos, sizeof was.pos);
-    memcpy(s->rot, was.rot, sizeof was.rot);
+    PuppetMotion newest;
+    PuppetPose pose;
+    motion_of(&p->ring[p->count - 1], &newest);
+    memcpy(pose.pos, s->pos, sizeof pose.pos);
+    memcpy(pose.rot, s->rot, sizeof pose.rot);
+    puppet_show(&p->view, &tune, RACE_TIME, &newest, &pose);
+    memcpy(s->pos, pose.pos, sizeof pose.pos);
+    memcpy(s->rot, pose.rot, sizeof pose.rot);
 }
 
 static int puppet(const uint8_t *r)
@@ -396,7 +381,7 @@ int hle_puppet_physics(uint8_t *r)
        runs the crash to its respawn. */
     if (FIELD(r, CRASH_FLAGS_AT, uint32_t) & 4) {
         p->remote_crash = s.crash & 4;
-        p->have_basis = 0;  /* after the crash the rider is shown where its snapshots are, at once */
+        p->view.have_basis = 0;  /* after the crash the rider is shown where its snapshots are, at once */
         return 0;
     }
     if (pp.predict) smooth(p, &s);
@@ -503,7 +488,7 @@ void hle_puppet_start(void)
         p->sent_pad.period = i ? 30 : 60;
         if (!i) continue;
         memset(p->mirror, 0, sizeof p->mirror);
-        p->count = 0, p->have_age = 0, p->have_basis = 0, p->remote_crash = 0;
+        p->count = 0, p->have_age = 0, p->view.have_basis = 0, p->remote_crash = 0;
         if (i < pp.nslots && pp.kept[lobby_of(i)]) {  /* a new race: the host's AI rides it now */
             pp.kept[lobby_of(i)] = 0;
             p->on = !owned(i);
