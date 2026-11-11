@@ -31,7 +31,7 @@
 // anew with "turn":true, which tells the room to keep this game's credentials for that session.
 // A failed relay session falls back to a plain direct offer (and one more ask).
 
-const TURN_AFTER_MS = 2000, READY_TIMEOUT_MS = 8000, CONNECT_TIMEOUT_MS = 10000, OPEN_LIMIT_MS = 10000;
+const TURN_AFTER_MS = 2000, DISCONNECT_GRACE_MS = 6000, READY_TIMEOUT_MS = 8000, CONNECT_TIMEOUT_MS = 10000, OPEN_LIMIT_MS = 10000;
 const EARLY_EVENTS = 128, HELD_EVENTS = 512, PROBE_ID = 1023;
 const FRAME_STATE = 5, FRAME_EVENT = 6, FRAME_VOICE = 7;
 
@@ -39,7 +39,7 @@ const FRAME_STATE = 5, FRAME_EVENT = 6, FRAME_VOICE = 7;
 // servers), as on a network that blocks UDP, and asks for TURN at once.
 export function startSfu(port, say = () => {}, options = {}) {
   if (typeof RTCPeerConnection !== 'function') return false;
-  let turnTimer = 0, relay = null, viaTurn = false;  // relay: the TURN iceServers the next offer uses
+  let turnTimer = 0, graceTimer = 0, relay = null, viaTurn = false;  // relay: the TURN iceServers the next offer uses
   let pc = null, answered = false, connected = false, attempt = 0, pause = 1000, retryAt = 0, retryTimer = 0;
   let me = -1, race = null, released = false, readySent = false, readyTimer = 0, connectTimer = 0;
   const channels = new Map();   // channelId -> { memberId, name, local, dc, at }
@@ -51,19 +51,21 @@ export function startSfu(port, say = () => {}, options = {}) {
   const route = on => port.postMessage({ kind: 'route', sfu: on });
 
   function teardown() {
-    clearTimeout(connectTimer); clearTimeout(readyTimer); clearTimeout(turnTimer);
+    clearTimeout(connectTimer); clearTimeout(readyTimer); clearTimeout(turnTimer); clearTimeout(graceTimer);
+    readySent = false;  // the room forgets a failed session's ready: the new one says it again
     for (const c of channels.values()) try { c.dc?.close(); } catch {}
     channels.clear(); closing.clear(); waiting.clear();
     try { pc?.close(); } catch {}
     pc = null; answered = connected = false;
   }
   function failed(why) {
-    say(`net: SFU: ${why}; a new session in ${(pause / 1000).toFixed(0)} s`);
+    const wait = pause;
+    say(`net: SFU: ${why}; a new session in ${(wait / 1000).toFixed(0)} s`);
     teardown();
-    retryAt = performance.now() + pause;
+    retryAt = performance.now() + wait;
     pause = Math.min(60000, pause * 2);
     clearTimeout(retryTimer);
-    retryTimer = setTimeout(() => { if (!pc && me >= 0) offer(); }, pause);
+    retryTimer = setTimeout(() => { if (!pc && me >= 0) offer(); }, wait);
   }
 
   async function offer() {
@@ -78,11 +80,16 @@ export function startSfu(port, say = () => {}, options = {}) {
     pc.onconnectionstatechange = () => {
       if (mine !== attempt) return;
       const s = pc.connectionState;
+      if (s === 'connected') clearTimeout(graceTimer);
       if (s === 'connected' && !connected) {
         connected = true; pause = 1000; clearTimeout(connectTimer);
         say('net: SFU: connected');
         signal({ type: 'sfu_connected' });
-      } else if (s === 'failed' || (s === 'disconnected' && connected)) failed(`connection ${s}`);
+      } else if (s === 'failed') failed('connection failed');
+      else if (s === 'disconnected' && connected) {  // usually back within seconds: a new session only if not
+        clearTimeout(graceTimer);
+        graceTimer = setTimeout(() => { if (mine === attempt && pc?.connectionState !== 'connected') failed('connection lost'); }, DISCONNECT_GRACE_MS);
+      }
     };
     try {
       await pc.setLocalDescription(await pc.createOffer());
@@ -174,8 +181,9 @@ export function startSfu(port, say = () => {}, options = {}) {
   }
   function send(frame) {
     if (!race) return;
-    if (frame[0] === FRAME_VOICE && !released) return;  // voice is never held: it would play late
-    if (!released) {  // until the room releases the race: the newest STATE per bundle, every EVENT
+    // Voice is never held (it would play late): before the release it goes at once on an open state
+    // channel, so the racers hear each other through the countdown (the room passes them none).
+    if (!released && frame[0] !== FRAME_VOICE) {  // until the room releases the race: the newest STATE per bundle, every EVENT
       if (frame[0] === FRAME_STATE) heldState.set(frame[3] ?? 0, frame);
       else if (heldEvents.length < HELD_EVENTS) heldEvents.push(frame);
       return;

@@ -66,14 +66,16 @@ async function start(m) {
   const SIGNAL = /^\{"type":"(welcome|start|ended|error|sfu_[a-z_]+)"/;
 
   // ---- the sockets ----
-  const sockets = new Map(); let current = 0, sentAt = 0, aliveAt = 0;
+  // latest: the socket the page opened last; while the room's socket is down (a drop mid-race, its
+  // rejoin coming) the SFU's frames go on to the game under it, as the native client's do
+  const sockets = new Map(); let current = 0, latest = 0, sentAt = 0, aliveAt = 0;
   const racing = () => Atomics.load(shared, W.racing) !== 0;
   const inRoom = () => Atomics.load(shared, W.inRoom) !== 0;
   function open(sock, url) {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { say(`online: ${e.message}`); tell(OP.CLOSED, sock, 1006, enc.encode(e.message)); return; }
     ws.binaryType = 'arraybuffer';
-    sockets.set(sock, ws);
+    sockets.set(sock, ws); latest = sock;
     ws.onopen = () => { current = sock; tell(OP.OPENED, sock); };
     ws.onmessage = e => {
       const t = gameNow();
@@ -102,7 +104,7 @@ async function start(m) {
   if (sfu) sfu.onmessage = e => { const s = e.data;
     if (s.kind === 'text') { const ws = sockets.get(current); if (ws?.readyState === 1) ws.send(s.text); }
     else if (s.kind === 'route') sfuRace = !!s.sfu;
-    else if (s.kind === 'frame' && current) arrived(current, new Uint8Array(s.data), gameNow());
+    else if (s.kind === 'frame' && (current || latest)) arrived(current || latest, new Uint8Array(s.data), gameNow());
   };
   function send(sock, data, binary) {
     if (binary && sfuRace && (data[0] === 5 || data[0] === 6 || data[0] === 7)) {  // an SFU race's frame: the page sends it
