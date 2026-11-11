@@ -1,5 +1,39 @@
 [
   {
+    "date": "2026-11-11",
+    "title": "Smoother online races",
+    "items": [
+      "Players on strict networks (school, office, some mobile data) now connect through Cloudflare's relay over the normal secure web port, so they stay on the fast WebRTC connection instead of slowing the whole race down.",
+      "A race waits a few seconds for a player who is still connecting before it starts, instead of falling back to the slower path.",
+      "Riders whose updates arrive late are drawn closer to where they really are, so someone ahead no longer looks behind.",
+      "Voice chat in races goes over the faster WebRTC connection, and racers can talk during the countdown.",
+      "A short network blip no longer drops your connection: the game waits a few seconds for it to come back.",
+      "Fixed: a player leaving right as a race started could make the race hang; a racer who left the race could no longer hear or be heard.",
+      "Reload the page so everyone in a room has this version."
+    ]
+  },
+  {
+    "date": "2026-11-11",
+    "title": "Faster on weaker PCs",
+    "items": [
+      "If your PC can't hold the frame rate you picked (above 60), the game now caps itself at a rate it holds steadily, and lifts the cap when there's room. Steady frames feel smoother than a rate that jumps around.",
+      "If the graphics card is what's slow, the resolution steps down a level in heavy scenes and goes back to your setting when things calm down.",
+      "The game starts a little sooner: the graphics code loads while the rest downloads.",
+      "In an online room, the room's track downloads first, so you can race sooner after opening the page."
+    ]
+  },
+  {
+    "date": "2026-11-11",
+    "title": "Easier to use",
+    "items": [
+      "\"Controls and keys\" on this page shows every key: V to talk, Y to chat, ` for the menu.",
+      "An invite link says which room you're joining; a wrong access code and a site that didn't answer are told apart.",
+      "The room list shows who is TALKING, and the race feed says who finished where, who rejoined, and who joined or left the room.",
+      "If the game stops, the menu says so and offers to reload the page. Problems with the microphone or the network show a short note over the game.",
+      "The Dev notes can be folded away with their minimize button."
+    ]
+  },
+  {
     "date": "2026-11-09",
     "title": "Lower ping, and no more mystery lag",
     "items": [
