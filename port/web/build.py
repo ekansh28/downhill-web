@@ -83,6 +83,11 @@ def main():
             # Compact imports are a newer proposal unsupported by Node 24.
             tmp=OUT/(dst.stem+'-optimized.wasm')
             run(BINARYEN,src,'-O3','-g','--all-features','--disable-compact-imports','-o',tmp)
+            if dst.name=='vu.wasm':
+                # V8 builds a v128.const at every use: the VU worker's repeated masks go into
+                # locals, after wasm-opt, which would fold them back (hoist_consts.py, finding 209)
+                from hoist_consts import hoist
+                print('build: vu.wasm: %d constants into locals in %d functions'%hoist(tmp,tmp)[::-1])
             dst.write_bytes(tmp.read_bytes())
         elif src!=dst:dst.write_bytes(src.read_bytes())
     generate(OUT/'dhd_core.wasm',OUT/'imports.json')

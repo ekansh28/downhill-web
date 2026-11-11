@@ -58,6 +58,15 @@ def hoist_body(m, k, min_uses):
             out += b[last:at] + b'\x20' + enc_u(local[b[imm:imm + 16]])  # local.get
             last = nxt
     out += b[last:]
+    # The new body must decode to its end, with the hoisted values left only in its prologue.
+    n, i = uleb(out, 0)
+    for _ in range(n):
+        _, i = uleb(out, i)
+        i += 1
+    left = collections.Counter(bytes(out[imm:imm + 16]) for at, op, sub, imm, nxt in instructions(out, i, len(out))
+                               if op == 0xFD and sub == V128_CONST)
+    if any(left[v] != 1 for v in chosen) or out[-1] != 0x0B:
+        raise ValueError('hoist_consts: function %d did not rewrite cleanly' % k)
     return bytes(out), len(chosen)
 
 
