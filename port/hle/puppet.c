@@ -102,6 +102,8 @@ enum { RING = 32, MAX_EVENTS = 16, NET_SLOTS = 10 };
    full copy every PAD_REFRESH sends, finding 158). */
 #include "state_bundle.h"
 #include "puppet_predict.h"
+/* Snapshots a puppet's age estimate sees before prediction trusts it (predict_limit). */
+enum { PREDICT_SETTLED = 16 };
 enum { EVENT_VERSION = 2, EVENT_HIT = 1 };  /* a hit: online.c's EVENT version */
 
 typedef struct Puppet {
@@ -110,7 +112,7 @@ typedef struct Puppet {
     int count;
     /* On arrival, how old each snapshot was on the shared clock (s): its mean and mean deviation
        (smoothed, gain 1/16), and the interval between the sender's snapshots (finding 169) */
-    int have_age;
+    int have_age;            /* snapshots the estimates have seen (capped) */
     double age, jitter, interval;
     /* Prediction (finding 169): the snapshot the shown pose is carried forward from, the fading
        correction from the last change of it, and how far behind the present it was last shown */
@@ -231,6 +233,9 @@ static void feed(int slot, const Snapshot *s)
         double interval = s->time - p->ring[p->count - 1].time;
         p->jitter += (fabs(age - p->age) - p->jitter) / 16;
         p->age += (age - p->age) / 16;
+        if (p->have_age < 1000) p->have_age++;
+        /* Settled: start the mean again from a fresh snapshot, without the held first ones' age */
+        if (p->have_age == PREDICT_SETTLED) p->age = age;
         /* Lost packets must not teach the estimator a slower publication rate. */
         if (interval > 0 && interval < 0.075)
             p->interval += (interval - p->interval) / 16;
@@ -297,7 +302,9 @@ static void interpolate(const Puppet *p, double t, Snapshot *out)
 enum { PREDICT_LATE_MAX_MS = 600 };
 static double predict_limit(const Puppet *p)
 {
-    double usual = p && p->have_age ? p->age + 0.05 : 0;
+    /* The first snapshots of a race were held until its release and arrive seconds old: the usual
+       age counts once it has seen PREDICT_SETTLED of them (about half a second). */
+    double usual = p && p->have_age >= PREDICT_SETTLED ? p->age + 0.05 : 0;
     return fmin(PREDICT_LATE_MAX_MS / 1000.0, fmax(PREDICT_MAX_MS / 1000.0, usual));
 }
 
