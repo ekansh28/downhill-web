@@ -1,5 +1,14 @@
 [
   {
+    "date": "2026-11-12",
+    "title": "Steadier riders online",
+    "items": [
+      "Other riders keep moving smoothly through a short network hiccup instead of freezing and then jumping ahead.",
+      "When a rider's position has to be corrected, they slide back into place instead of teleporting.",
+      "Small behind-the-scenes clean-ups to how the game passes work between its threads."
+    ]
+  },
+  {
     "date": "2026-11-11",
     "title": "Smoother online races",
     "items": [
