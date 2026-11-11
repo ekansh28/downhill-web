@@ -100,6 +100,9 @@ Nothing to gain there; not touched.
   its own (`port/web` plus `build/web`), served alternately.
 - 8-CPU runs: a PowerShell wrapper sets its own affinity to 0xFF (8 logical CPUs) and starts the
   run, and Edge and its workers inherit it (checked: affinity 255).
+- Checks: `python tools/check.py docs` and `quick` pass. In a fresh worktree `quick` needs
+  `DHD_MODULE_CACHE=0`: a core from the module cache leaves no `build/wasm/src`, and
+  `test_runtime` then stops at "no ps2_asm() calls".
 - The PC (16 logical CPUs, NVIDIA) was shared with other agents' builds: 74% load was seen during
   one run. The same build varies by 8-13 fps between runs, more than any difference measured
   here.
