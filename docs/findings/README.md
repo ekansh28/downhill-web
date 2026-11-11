@@ -231,6 +231,7 @@ out of date). New findings: copy `TEMPLATE.md` to the next free number on the la
 | 205 | [browsers use TURN over TLS when UDP to the SFU is blocked](205-browser-turn.md) | current |  |
 | 206 | [the browser caps its own frame rate and resolution when the PC falls behind](206-auto-pace.md) | in progress |  |
 | 207 | [the site's home page and menu in plain words](207-site-ux.md) | current |  |
+| 208 | [the browser's start compiles the renderer while the core downloads](208-browser-start-parallel.md) | current |  |
 | 075 | no file: the portable-core plan was numbered 075 on its branch and merged as 081 | renumbered | see 081 |
 | 113 | no file: the delta-time clock work was numbered 113 on its branch; the mixer's VBLANK time is in 139 | renumbered | see 139 |
 <!-- index:end -->

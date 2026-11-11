@@ -25,7 +25,7 @@ import { createVfs } from './vfs.js';
 import { createRemoteDisc } from './disc_remote.js';
 import { thunks } from './thunks.js';
 import { createSettings, BROWSER_PC_SETTINGS, RENDERER_LIVE } from './settings.js';
-import { startRenderer, renderImports, definesSharedMemoryHead, shareSafeDecoding, Q, Q2, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
+import { startRenderer, compileRenderer, renderImports, definesSharedMemoryHead, shareSafeDecoding, Q, Q2, QI, STAT, ENV_SCRATCH } from './graphics_common.js';
 import { FramePacer, ScalePacer } from './auto_pace.js';
 
 const post = (type, data) => postMessage({ type, ...data });
@@ -87,6 +87,9 @@ async function start(m) {
   // browser keep the compiled code for the next visit; whether it is the threaded build is read from
   // its first bytes on a second request (served from the same download).
   const coreModulePromise = WebAssembly.compileStreaming(fetch('build/dhd_core.wasm'));
+  // The renderer (the largest module after the core) and its glue, meanwhile (finding 208).
+  const rendererPromise = compileRenderer();
+  import('./build/renderer/dhd_render.js').catch(() => {});
   const threadedPromise = (async () => {
     const reader = (await fetch('build/dhd_core.wasm')).body.getReader();
     let head = new Uint8Array(0), answer = null;
@@ -99,14 +102,15 @@ async function start(m) {
     return !!answer;
   })();
   // dhd_voice.wasm: voice chat, for the net worker (net.js); without it the game plays with none
-  const [graphicsBytes, metadata, netBytes, voiceBytes, discModule] = await Promise.all([
-    fetchBytes('build/graphics.wasm'), fetch('build/imports.json').then(r => r.json()),
+  const graphicsPromise = WebAssembly.compileStreaming(fetch('build/graphics.wasm'));
+  const [metadata, netBytes, voiceBytes, discModule] = await Promise.all([
+    fetch('build/imports.json').then(r => r.json()),
     fetchBytes('build/dhd_net.wasm'), fetchBytes('build/dhd_voice.wasm').catch(e => { say(`voice: ${e.message}`); return null; }),
     WebAssembly.compileStreaming(fetch('build/dhd_disc.wasm'))]);
   // The threaded build's core defines a shared memory; its graphics imports link to gqueue.wasm.
   const threaded = await threadedPromise;
   if (threaded) shareSafeDecoding();
-  const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([coreModulePromise, WebAssembly.compile(graphicsBytes),
+  const [coreModule, graphicsModule, queueModule, vuModule] = await Promise.all([coreModulePromise, graphicsPromise,
     threaded ? WebAssembly.compileStreaming(fetch('build/gqueue.wasm')) : null, threaded ? WebAssembly.compileStreaming(fetch('build/vu.wasm')) : null]);
   // m.discUrl: this site's own disc (port/web/host, ?disc=KEY; disc_remote.js), else the player's file
   const disc = m.discUrl ? await createRemoteDisc(m.discUrl, say, undefined, ctrl => post('disc-wait', { ctrl })) : discSource(m);
@@ -288,7 +292,7 @@ async function start(m) {
     return ready;
   }
   async function startGraphicsWorker() {
-    await startWorker('graphics.js', 'graphics', { module: graphicsModule, canvas: m.canvas }, [m.canvas]);
+    await startWorker('graphics.js', 'graphics', { module: graphicsModule, renderer: await rendererPromise, canvas: m.canvas }, [m.canvas]);
     await startWorker('vu.js', 'VU', { module: vuModule }, []);
   }
   let discJob = null;  // the disc check's job: { answer } (host_service_disc_check_*)
@@ -512,7 +516,7 @@ host_service_host_backtrace host_service_presence host_service_touch_field host_
     post('exit', { status });
     return;
   }
-  const renderer = await startRenderer(memory, m.canvas, say);
+  const renderer = await startRenderer(memory, m.canvas, say, rendererPromise);
   say(`WebGPU: ${renderer.adapter} (${renderer.version})`);
   // The reactor's WASI needs: its environment, stderr, nothing else. The environment is the core's
   // as it is now (the reactor reads it again when it makes the native renderer, after the core's

@@ -26,7 +26,7 @@ async function start(m) {
   let bytes, dv;
   const refresh = () => { bytes = new Uint8Array(memory.buffer); dv = new DataView(memory.buffer); };
   refresh();
-  const renderer = await startRenderer(memory, canvas, say);
+  const renderer = await startRenderer(memory, canvas, say, m.renderer);
   say(`WebGPU: ${renderer.adapter} (${renderer.version}), in the graphics worker`);
   let gx;
   const enc = new TextEncoder(), envList = () => Object.entries(env).map(([k, v]) => enc.encode(`${k}=${v}\0`));

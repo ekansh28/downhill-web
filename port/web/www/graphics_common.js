@@ -8,15 +8,19 @@
 const RUST_WINDOW = [0x60000000, 0x69000000];
 const RUST_INIT_FLAGS = 7;
 
+// The renderer's compiled module: worker.js compiles it while the core downloads (start-up runs
+// these in parallel, finding 208) and hands it to the graphics worker; compiled here otherwise.
+export const compileRenderer = () => WebAssembly.compileStreaming(fetch('build/renderer/dhd_render_bg.wasm'));
+
 // The Rust module, on the core's memory; dhdr_web_init on the canvas. Returns the glue and the
 // module's exports.
-export async function startRenderer(memory, canvas, say) {
+export async function startRenderer(memory, canvas, say, compiled = null) {
   const words = new Uint32Array(memory.buffer, RUST_WINDOW[0], (RUST_WINDOW[1] - RUST_WINDOW[0]) / 4);
   let bits = 0;
   for (let i = 0; i < words.length; i++) bits |= words[i];
   if (bits) throw Error(`GS: the Rust renderer's memory window is in use (nonzero at 0x${(RUST_WINDOW[0] + 4 * words.findIndex(v => v)).toString(16)})`);
   const R = await import('./build/renderer/dhd_render.js');
-  const module = await WebAssembly.compileStreaming(fetch('build/renderer/dhd_render_bg.wasm'));
+  const module = await (compiled || compileRenderer());
   const rx = await R.default({ module_or_path: module, memory });
   if (rx.memory !== memory) throw Error('GS: the Rust renderer does not use the core memory');
   // Rust logs through the console (its wbg bridge); the page's log shows those lines too.
