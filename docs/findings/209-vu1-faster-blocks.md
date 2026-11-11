@@ -26,6 +26,22 @@ scheduling of the AOT blocks that the profile says pays. Done when:
 
 ## Decisions
 
+- **Neither (b) nor (c).** The research plan's two block items target the run loop (under 3% of
+  the busy worker) and the block bodies (10%). Block chaining could save at most the first;
+  static scheduling a part of the second, at the cost of a second, unproven code path in the
+  generator. Not done; the time went where the profile pointed instead.
+- **A wasm pass, not a C change.** The constants are LLVM's and V8's business, so the fix is a
+  pass on the finished `vu.wasm` (`port/web/hoist_consts.py`, run by `port/web/build.py` after
+  wasm-opt -O3, which would fold the constants back). It changes no C, so the x64 build and the
+  VU tests' code are untouched, and it is exact by construction: each `local.get` reads the value
+  the `v128.const` it replaces would have made. The pass decodes every rewritten body again and
+  refuses one that does not decode to its end with the constants left only in its prologue.
+- **Only `vu.wasm`.** The core (2057 constants in 888 functions) and `graphics.wasm` (28) would
+  take the same pass; neither worker is the race's limit (finding 197), so they are left for a
+  measured follow-up.
+- Constants used once are not hoisted (`--min-uses 2`): 116 more in 9 more functions, nothing
+  to share.
+
 ## Surprises
 
 **Where the VU worker's time goes.** Race fields 3500-4300 headless (`run_headless.mjs
